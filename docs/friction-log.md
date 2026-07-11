@@ -45,3 +45,8 @@ Format: date/time (UTC), what we tried, what happened, workaround, severity.
 - **What:** `agent validate-listing --service` rejected a valid JSON array with a PARSE error whose own `fix` example shows lowercase keys (`servicedescription`, `servicetype`) — but the actual required keys are camelCase (`serviceName`, `serviceDescription`, `serviceType`), documented only in `agent create --help`. Following the error's example verbatim fails again with the same error.
 - **Workaround:** read `agent create --help` for the real element shape.
 - **Severity:** medium — a self-contradicting error message sends every first-time ASP through at least two failed attempts.
+
+### FL-009 — `agent activate` hard-depends on the okx-a2a Node daemon
+- **What:** `onchainos agent activate` refuses to run until `@okxweb3/a2a-node` is globally npm-installed and its daemon is up (`okx-a2a doctor --fix`) — even for a pure A2MCP (API-only) listing that never uses agent-to-agent chat. Registration (`agent create`) had no such gate. Nothing in the tutorial or register docs mentions this dependency; the doctor also silently installs a launchd autostart.
+- **Workaround:** install + `doctor --fix` (needs Node ≥22.14 and a logged-in AI provider CLI), then re-run activate.
+- **Severity:** medium — surprise global install with OS-level autostart, discovered only at the final publish step; also a second agent-harness classifier trip (global npm install of an agent-chosen package needs manual approval).
