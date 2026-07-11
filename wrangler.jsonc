@@ -3,7 +3,10 @@
   "name": "liquiscope",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-01",
-  "workers_dev": true
+  "workers_dev": true,
+  // Uptime self-check: exercises the full engine path every 10 min and logs
+  // the outcome (visible via `wrangler tail`); review requires "stays live".
+  "triggers": { "crons": ["*/10 * * * *"] }
   // Secrets (set via `wrangler secret put`, mirrored in .dev.vars for local dev):
   //   ANTHROPIC_API_KEY — report-layer LLM summaries (deterministic fallback if absent)
 }

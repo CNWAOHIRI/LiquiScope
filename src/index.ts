@@ -147,6 +147,24 @@ async function handleReport(request: Request, env: Env): Promise<Response> {
 }
 
 export default {
+  /** Cron self-check: full engine path against a fixture wallet; logged for `wrangler tail`. */
+  async scheduled(_event: unknown, _env: Env, ctx: { waitUntil(p: Promise<unknown>): void }): Promise<void> {
+    ctx.waitUntil(
+      (async () => {
+        const t0 = Date.now();
+        try {
+          const scans = await scanWallet("0x496b0Da20E553cC4B1879D54e57283b8C9fDfbB4", ["arbitrum"]);
+          const errors = scans.flatMap((s) => s.errors);
+          console.log(
+            JSON.stringify({ selfCheck: errors.length === 0 ? "ok" : "degraded", ms: Date.now() - t0, positions: scans[0].positions.length, errors }),
+          );
+        } catch (e) {
+          console.log(JSON.stringify({ selfCheck: "failed", ms: Date.now() - t0, error: e instanceof Error ? e.message : String(e) }));
+        }
+      })(),
+    );
+  },
+
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     try {
