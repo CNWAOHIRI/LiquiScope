@@ -98,8 +98,8 @@ async function facilitator(env: X402Env, op: "verify" | "settle", payload: unkno
     body,
     signal: AbortSignal.timeout(30_000),
   });
-  const json = (await res.json()) as { code: string; msg?: string; data?: Record<string, unknown> };
-  if (!res.ok || json.code !== "0") throw new Error(`facilitator ${op} failed: HTTP ${res.status} code=${json.code} ${json.msg ?? ""}`);
+  const json = (await res.json()) as { code: string | number; msg?: string; data?: Record<string, unknown> };
+  if (!res.ok || String(json.code) !== "0") throw new Error(`facilitator ${op} failed: HTTP ${res.status} code=${json.code} ${json.msg ?? ""}`);
   return json.data ?? {};
 }
 

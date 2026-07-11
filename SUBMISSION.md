@@ -22,7 +22,10 @@
 
 ## Revenue Rocket evidence
 
-- ⏳ First settled x402 payment: tx hash + `PAYMENT-RESPONSE` receipt (self-test call, Phase 3).
+- **First settled x402 payment (self-test, 2026-07-12):**
+  - Settlement tx: `0x02b96d9e9d04a254c3c9f0fca675057d46678a062da5cec098e1bc6ad840b4e0` (X Layer, block 65039522, status success)
+  - Amount: 0.15 USD₮0 · payer `0x5c0a7b5cae9f6ecdf005d80c323d70a4c2c7b556` · scheme exact/EIP-3009, signed via Agentic Wallet TEE (`onchainos payment pay`)
+  - Response: HTTP 200 with full report (LLM summary) + `PAYMENT-RESPONSE` settlement header
 - Settlement is automatic per call via OKX facilitator (verify + settle, HMAC-authed).
 
 ## Tech notes (if asked)

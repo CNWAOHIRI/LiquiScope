@@ -50,3 +50,8 @@ Format: date/time (UTC), what we tried, what happened, workaround, severity.
 - **What:** `onchainos agent activate` refuses to run until `@okxweb3/a2a-node` is globally npm-installed and its daemon is up (`okx-a2a doctor --fix`) — even for a pure A2MCP (API-only) listing that never uses agent-to-agent chat. Registration (`agent create`) had no such gate. Nothing in the tutorial or register docs mentions this dependency; the doctor also silently installs a launchd autostart.
 - **Workaround:** install + `doctor --fix` (needs Node ≥22.14 and a logged-in AI provider CLI), then re-run activate.
 - **Severity:** medium — surprise global install with OS-level autostart, discovered only at the final publish step; also a second agent-harness classifier trip (global npm install of an agent-chosen package needs manual approval).
+
+### FL-010 — Facilitator API: numeric `code` vs documented string; `timeout` + `success:true`
+- **What (2026-07-12):** (a) The x402 facilitator (`/api/v6/pay/x402/verify`) returns `"code": 0` as a JSON **number**, while OKX's own API examples show `"code": "0"` as a string — a strict-equality check against `"0"` treats every success as failure. (b) `settle` with `syncSettle:true` returned `{"success": true, "status": "timeout", "amount": null}` for a payment that settled fine on-chain seconds later — "timeout" only means the sync wait expired, but paired with a null amount it reads like a failure.
+- **Workaround:** compare `String(code) !== "0"`; treat `success:true` as authoritative and verify the tx hash on-chain.
+- **Severity:** medium — both cost a debugging round-trip on the very first real payment.
