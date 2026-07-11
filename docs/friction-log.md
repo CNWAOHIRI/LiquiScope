@@ -40,3 +40,8 @@ Format: date/time (UTC), what we tried, what happened, workaround, severity.
 - **What:** Immediately after subdomain registration + deploy, HTTPS requests fail with `sslv3 alert handshake failure` — DNS resolves but the edge cert isn't provisioned yet.
 - **Workaround:** poll until the cert goes live (minutes-scale). Relevant for OKX listing review: never submit the endpoint URL until a real 200-over-HTTPS is observed.
 - **Severity:** low.
+
+### FL-008 — `validate-listing` PARSE error suggests wrong field names
+- **What:** `agent validate-listing --service` rejected a valid JSON array with a PARSE error whose own `fix` example shows lowercase keys (`servicedescription`, `servicetype`) — but the actual required keys are camelCase (`serviceName`, `serviceDescription`, `serviceType`), documented only in `agent create --help`. Following the error's example verbatim fails again with the same error.
+- **Workaround:** read `agent create --help` for the real element shape.
+- **Severity:** medium — a self-contradicting error message sends every first-time ASP through at least two failed attempts.
