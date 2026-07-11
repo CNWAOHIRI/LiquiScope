@@ -1,0 +1,9 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "liquiscope",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-01",
+  "workers_dev": true
+  // Secrets (set via `wrangler secret put`, mirrored in .dev.vars for local dev):
+  //   ANTHROPIC_API_KEY — report-layer LLM summaries (deterministic fallback if absent)
+}
