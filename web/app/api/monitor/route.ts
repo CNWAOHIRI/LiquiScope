@@ -18,6 +18,9 @@ const TIER_LABEL: Record<string, string> = {
   critical: "CRITICAL",
   liquidatable: "LIQUIDATABLE",
   none: "NO DEBT",
+  // Legacy 3-tier value that may persist in KV states written before the
+  // 5-tier port; renders correctly in the one-time transition alert.
+  warning: "WARNING",
 };
 
 const TIER_EMOJI: Record<string, string> = {
