@@ -1,0 +1,31 @@
+name: LiquiScope Monitor
+
+# Best-effort cron — GitHub Actions schedules routinely slip 5-15 minutes
+# under load, sometimes more. Fine for a liquidation-risk monitor; not a
+# guarantee for anything time-critical. See web/README.md.
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hit /api/monitor
+        env:
+          MONITOR_URL: ${{ vars.MONITOR_URL }}
+          MONITOR_SECRET: ${{ secrets.MONITOR_SECRET }}
+        run: |
+          if [ -z "$MONITOR_URL" ] || [ -z "$MONITOR_SECRET" ]; then
+            echo "::error::MONITOR_URL (repo variable) or MONITOR_SECRET (repo secret) not set"
+            exit 1
+          fi
+          status=$(curl -s -o response.json -w "%{http_code}" \
+            -X GET "$MONITOR_URL" \
+            -H "x-monitor-secret: $MONITOR_SECRET")
+          echo "HTTP $status"
+          cat response.json
+          if [ "$status" != "200" ]; then
+            exit 1
+          fi
