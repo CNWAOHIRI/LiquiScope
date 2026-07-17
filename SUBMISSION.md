@@ -11,9 +11,9 @@
 | Category | Finance |
 | Agent ID | **#5074** (ERC-8004, X Layer) |
 | ASP wallet | `0x5c0a7b5cae9f6ecdf005d80c323d70a4c2c7b556` |
-| Listing link | ⏳ marketplace URL once listed (find via OKX.AI search "LiquiScope") |
+| Listing link | **https://www.okx.ai/agents/5074** (first review PASSED; page 404s while the service-update re-review completes — updated 2026-07-17, tx 0x89bb4e3a7290258064af4dc13ab22bf05766eef5d0f9c98f233efbd3d8691b38) |
 | Endpoint | https://liquiscope.liquiscope.workers.dev |
-| Repo | ⏳ (push to GitHub if the form asks; repo is local) |
+| Repo | https://github.com/CNWAOHIRI/LiquiScope |
 
 ## Services
 
