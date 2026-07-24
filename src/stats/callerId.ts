@@ -13,14 +13,24 @@ import { PAY_TO } from "../x402";
 export type CallClass = "self" | "external" | "unclassified";
 
 /**
- * "Our own" caller ids — currently just the LiquiScope Agentic Wallet
- * itself, which is what our own self-payment test calls use (see
- * docs/build-journal.md's first settled-payment entry). No IP-hash entries
- * are hardcoded here: we don't have a stable, known dev/demo IP to pin,
- * and guessing one would misclassify real external callers who happen to
- * share it — "unclassified" is the honest answer until one exists.
+ * The demo agent's own funded wallet (liquiscope-demo-agent, a separate
+ * standalone repo — its whole job is to be a real, transparently self-
+ * tagged consumer of these endpoints for demo/evidence purposes, not
+ * disguised as external traffic). Not a secret — this is a public wallet
+ * address, safe to hardcode; the private key lives only in that repo's
+ * git-ignored .env.
  */
-const SELF_CALLER_IDS = new Set<string>([`wallet:${PAY_TO.toLowerCase()}`]);
+const DEMO_AGENT_WALLET = "0x616A2DB0d112d70C20D7044cf5D1Ea37e550B515";
+
+/**
+ * "Our own" caller ids: the LiquiScope Agentic Wallet itself (self-payment
+ * test calls, see docs/build-journal.md's first settled-payment entry) and
+ * the demo agent's wallet above. No IP-hash entries are hardcoded here: we
+ * don't have a stable, known dev/demo IP to pin, and guessing one would
+ * misclassify real external callers who happen to share it —
+ * "unclassified" is the honest answer until one exists.
+ */
+const SELF_CALLER_IDS = new Set<string>([`wallet:${PAY_TO.toLowerCase()}`, `wallet:${DEMO_AGENT_WALLET.toLowerCase()}`]);
 
 async function hashIp(ip: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(ip));
