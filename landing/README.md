@@ -40,10 +40,6 @@ Note: local preview on `http://localhost:8080` or `http://127.0.0.1:5500` (Live 
 
 Same line is already live in the Worker's `GET /` response (`dataAccess` field) and on both landing pages (`.badge-readonly`).
 
-## Known gap
-
-`app.js`'s `OKX_LISTING_URL` is `null` — no public marketplace URL for Agent #5074 was found in this repo's docs, and one wasn't guessed. The CTA falls back to describing the paid endpoints directly (`POST /report`, `POST /watch`) instead of a dead/wrong link. Set `OKX_LISTING_URL` once the real listing link exists.
-
 ## /stats counter framing (item 2)
 
 Chose **cumulative since launch**, not a live tick: at real (low, pre-launch) traffic volumes a live "3 calls today" counter reads as unimpressive rather than credible. A cumulative total with an explicit "since &lt;date&gt;" anchor is honest at any volume and doesn't need reframing later as it grows.

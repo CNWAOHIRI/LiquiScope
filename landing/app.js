@@ -5,10 +5,7 @@
 const API_BASE = "https://liquiscope.liquiscope.workers.dev";
 
 // --- OKX ASP listing link -------------------------------------------------
-// TODO(user): no public marketplace URL for Agent #5074 is confirmed yet —
-// placeholder only. Replace OKX_LISTING_URL once the real listing link
-// exists (do not guess it).
-const OKX_LISTING_URL = null;
+const OKX_LISTING_URL = "https://www.okx.ai/agents/5074?source=search";
 
 function tierClass(tier) {
   if (!tier) return "tier-none";
