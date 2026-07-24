@@ -2,19 +2,22 @@
  * LiquiScope A2MCP endpoints.
  *
  *   GET  /health  — liveness probe
- *   POST /check   — FREE: single-chain health factor + risk tier
- *                   body: { "address": "0x…", "chain": "base"|"ethereum"|"arbitrum" (default base) }
- *   POST /report  — x402-PAID ($0.15 USDT, X Layer): full multi-chain analysis
- *                   body: { "address": "0x…" }
+ *   POST /check   — FREE: single-chain quick health factor + risk tier
+ *                   body: { "address": "0x…", "chain": "base"|"ethereum"|"arbitrum"|"optimism" (default base) }
+ *   POST /report  — x402-PAID ($0.15 USDT, X Layer): full cross-protocol,
+ *                   cross-chain liquidation-risk report — every adapter
+ *                   (Aave v3, Compound v3) × every supported chain, in one call.
  *
- * Never 500s on upstream trouble: RPC failures degrade to partial results or
- * 503, LLM failures fall back to a deterministic summary.
+ * Never 500s on upstream trouble: one adapter×chain hiccup degrades that
+ * slice (recorded in errors + the coverage matrix), never the whole scan;
+ * LLM failures fall back to a deterministic summary.
  */
 
-import { getAddress, isAddress, type Address } from "viem";
-import { scanWallet } from "./engine/scan";
+import { getAddress, type Address } from "viem";
+import { ADAPTERS, aggregatePortfolio, coverageMatrix, scanWallet } from "./engine/scan";
 import { CHAINS } from "./engine/rpc";
 import type { ChainKey } from "./engine/types";
+import { toCompatPosition } from "./report/compat";
 import { generateSummary } from "./report/summary";
 import { RECOMMENDATIONS, worstTier } from "./report/template";
 import { challenge402, paymentResponseHeader, processPayment, type X402Env } from "./x402";
@@ -62,6 +65,13 @@ function rateLimited(ip: string): boolean {
   return entry.count > RATE_LIMIT;
 }
 
+/**
+ * Free tier — deliberately unchanged behavior and response shape from the
+ * single-protocol, 3-chain build: single chain, quick HF, same field names
+ * (totalCollateralUsd/totalDebtUsd survive here even though the engine's
+ * internal NormalizedPosition renamed them to collateralUsd/debtUsd — this
+ * is the back-compat seam). The only additive change is a 4th chain choice.
+ */
 async function handleCheck(request: Request): Promise<Response> {
   const body = await readBody(request);
   const address = parseAddress(body.address ?? body.wallet ?? body.walletAddress);
@@ -90,17 +100,22 @@ async function handleCheck(request: Request): Promise<Response> {
       market: p.market,
       healthFactor: p.healthFactor === Infinity ? null : p.healthFactor,
       tier: p.tier,
-      totalCollateralUsd: p.totalCollateralUsd,
-      totalDebtUsd: p.totalDebtUsd,
+      totalCollateralUsd: p.collateralUsd,
+      totalDebtUsd: p.debtUsd,
     })),
     note:
       scan.positions.length === 0
-        ? `No Aave v3 / Compound v3 positions found on ${chain} (positions under $1 are ignored).`
-        : "Full multi-chain report with liquidation prices, %-drop-to-liquidation and recommendations: POST /report (x402, $0.15).",
+        ? `No lending positions found on ${chain} (positions under $1 are ignored).`
+        : "Full cross-protocol, cross-chain report with liquidation prices, %-drop-to-liquidation and recommendations: POST /report (x402, $0.15).",
     timestamp: new Date().toISOString(),
   });
 }
 
+/**
+ * Paid tier — the upgraded product: every adapter × every supported chain,
+ * fanned out in parallel, with a portfolio-level aggregate and a coverage
+ * matrix so the caller can see exactly what was (and wasn't) checked.
+ */
 async function handleReport(request: Request, env: Env): Promise<Response> {
   const resourceUrl = new URL(request.url).origin + "/report";
   const payment = await processPayment(request, resourceUrl, env);
@@ -120,24 +135,41 @@ async function handleReport(request: Request, env: Env): Promise<Response> {
   const scans = await scanWallet(address);
   const positions = scans.flatMap((s) => s.positions);
   const errors = scans.flatMap((s) => s.errors.map((e) => ({ chain: s.chain, ...e })));
-  if (positions.length === 0 && errors.length >= 5) {
-    return json({ error: "all upstream data sources unavailable, retry shortly", detail: errors }, 503);
+  const coverage = coverageMatrix(scans);
+  const totalSources = coverage.filter((c) => c.status !== "unsupported").length;
+  const failedSources = coverage.filter((c) => c.status === "error").length;
+  if (positions.length === 0 && totalSources > 0 && failedSources === totalSources) {
+    return json({ error: "all upstream data sources unavailable, retry shortly", detail: errors, coverage }, 503);
   }
 
   const { summary, source } = await generateSummary(scans, env.ANTHROPIC_API_KEY);
-  const tier = worstTier(positions);
+  const portfolio = aggregatePortfolio(scans);
+  // Same string format the field has always had ("protocol (chain, chain, …)"),
+  // now correctly reflecting real coverage instead of the old hardcoded 3/2-chain
+  // lists. Field name/type unchanged from the live, reviewed response — see
+  // report/compat.ts for the full additive-only contract this endpoint honors.
+  const protocolsSummary = ADAPTERS.map((a) => `${a.protocol} (${a.supportedChains.join(", ")})`);
 
   return json(
     {
       service: "liquiscope-report",
       address,
       chainsScanned: scans.map((s) => s.chain),
-      protocols: ["aave-v3 (ethereum, base, arbitrum)", "compound-v3 (base, arbitrum)"],
-      overallRiskTier: tier,
-      recommendation: tier === "none" ? "No debt anywhere — nothing can be liquidated." : RECOMMENDATIONS[tier],
+      protocols: protocolsSummary, // unchanged field name — content now accurate for 4 chains
+      protocolsScanned: protocolsSummary, // new, additive — same content, forward-looking name
+      overallRiskTier: portfolio.overallTier,
+      recommendation:
+        portfolio.overallTier === "none" ? "No debt anywhere — nothing can be liquidated." : RECOMMENDATIONS[portfolio.overallTier],
+      portfolio: {
+        totalCollateralUsd: portfolio.totalCollateralUsd,
+        totalDebtUsd: portfolio.totalDebtUsd,
+        positionCount: portfolio.positionCount,
+        riskiestPosition: portfolio.riskiestPosition ? toCompatPosition(portfolio.riskiestPosition) : null,
+      },
       summary,
       summarySource: source,
-      positions,
+      positions: positions.map(toCompatPosition),
+      coverage,
       partialErrors: errors.length > 0 ? errors : undefined,
       timestamp: new Date().toISOString(),
     },
@@ -185,10 +217,10 @@ export default {
       return json(
         {
           service: "LiquiScope",
-          description: "DeFi liquidation-risk reports (Aave v3 + Compound v3)",
+          description: "Cross-protocol, cross-chain DeFi liquidation-risk reports (Aave v3 + Compound v3, across Ethereum/Base/Arbitrum/Optimism)",
           endpoints: {
-            "POST /check": "free — single-chain health factor + risk tier { address, chain? }",
-            "POST /report": "x402-paid — full multi-chain analysis { address }",
+            "POST /check": "free — single-chain quick health factor + risk tier { address, chain? }",
+            "POST /report": "x402-paid — full cross-protocol, cross-chain analysis { address }",
           },
         },
         404,
