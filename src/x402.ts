@@ -19,6 +19,7 @@ const NETWORK = "eip155:196"; // X Layer mainnet — gas-free chain
 const USDT0 = "0x779ded0c9e1022225f8e0630b35a9b54be713736"; // USD₮0, 6 decimals
 export const PAY_TO = "0x5c0a7b5cae9f6ecdf005d80c323d70a4c2c7b556"; // LiquiScope Agentic Wallet
 export const PRICE_ATOMIC = "150000"; // $0.15 in 6-decimal USDT units
+export const REPORT_DESCRIPTION = "LiquiScope full multi-chain liquidation-risk report";
 const FACILITATOR = "https://web3.okx.com";
 
 /** btoa chokes on non-Latin1 (e.g. the ₮ in USD₮0) — encode UTF-8 bytes instead. */
@@ -35,29 +36,29 @@ function b64decode(s: string): string {
   return new TextDecoder().decode(bytes);
 }
 
-export function paymentRequirements(resourceUrl: string) {
+export function paymentRequirements(resourceUrl: string, amountAtomic: string = PRICE_ATOMIC, description: string = REPORT_DESCRIPTION) {
   return {
     scheme: "exact",
     network: NETWORK,
     asset: USDT0,
-    amount: PRICE_ATOMIC,
+    amount: amountAtomic,
     payTo: PAY_TO,
     maxTimeoutSeconds: 300,
     resource: resourceUrl,
-    description: "LiquiScope full multi-chain liquidation-risk report",
+    description,
     extra: { name: "USD₮0", version: "1", assetTransferMethod: "eip3009" },
   };
 }
 
-export function challenge402(resourceUrl: string): Response {
+export function challenge402(resourceUrl: string, amountAtomic: string = PRICE_ATOMIC, description: string = REPORT_DESCRIPTION): Response {
   const body = {
     x402Version: 2,
     resource: {
       url: resourceUrl,
-      description: "LiquiScope full multi-chain liquidation-risk report",
+      description,
       mimeType: "application/json",
     },
-    accepts: [paymentRequirements(resourceUrl)],
+    accepts: [paymentRequirements(resourceUrl, amountAtomic, description)],
   };
   const encoded = b64encode(JSON.stringify(body));
   return new Response(JSON.stringify(body), {
@@ -111,7 +112,13 @@ export type PaymentResult =
  * Verify + settle an inbound payment header. Returns the settlement object
  * (goes into the PAYMENT-RESPONSE header) or a typed failure.
  */
-export async function processPayment(request: Request, resourceUrl: string, env: X402Env): Promise<PaymentResult | null> {
+export async function processPayment(
+  request: Request,
+  resourceUrl: string,
+  env: X402Env,
+  amountAtomic: string = PRICE_ATOMIC,
+  description: string = REPORT_DESCRIPTION,
+): Promise<PaymentResult | null> {
   const header = request.headers.get("X-PAYMENT") ?? request.headers.get("PAYMENT-SIGNATURE");
   if (!header) return null; // caller sends the 402 challenge
 
@@ -126,7 +133,7 @@ export async function processPayment(request: Request, resourceUrl: string, env:
     return { ok: false, status: 400, error: "malformed payment header (expected base64 JSON)" };
   }
 
-  const requirements = paymentRequirements(resourceUrl);
+  const requirements = paymentRequirements(resourceUrl, amountAtomic, description);
   try {
     const verify = await facilitator(env, "verify", payload, requirements);
     if (!verify.isValid) {

@@ -16,7 +16,7 @@
 import { getAddress, type Address } from "viem";
 import { ADAPTERS, aggregatePortfolio, coverageMatrix, scanWallet } from "./engine/scan";
 import { CHAINS } from "./engine/rpc";
-import type { ChainKey } from "./engine/types";
+import type { ChainKey, Protocol } from "./engine/types";
 import { toCompatPosition } from "./report/compat";
 import { computePortfolioScore } from "./report/portfolioScore";
 import { computeRecommendations } from "./report/recommendations";
@@ -24,9 +24,14 @@ import { computeStressScenario, parseStressPct } from "./report/stress";
 import { generateSummary } from "./report/summary";
 import { RECOMMENDATIONS, worstTier } from "./report/template";
 import { challenge402, paymentResponseHeader, processPayment, type X402Env } from "./x402";
+import { runWatchCron } from "./watch/cron";
+import { computeWatchPriceAtomic, MAX_DURATION_DAYS, MIN_DURATION_DAYS, watchDescription } from "./watch/pricing";
+import { createSubscription, findSubscription } from "./watch/storage";
+import { toStatus, type WatchSubscription } from "./watch/types";
 
 interface Env extends X402Env {
   ANTHROPIC_API_KEY?: string;
+  WATCH_KV: KVNamespace;
 }
 
 const json = (data: unknown, status = 200, headers: Record<string, string> = {}) =>
@@ -194,9 +199,124 @@ async function handleReport(request: Request, env: Env): Promise<Response> {
   );
 }
 
+const PROTOCOLS: Protocol[] = ["aave-v3", "compound-v3"];
+
+function parseWebhookUrl(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  try {
+    const u = new URL(raw);
+    if (u.protocol !== "https:" && u.protocol !== "http:") return null;
+    return raw;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * POST /watch — x402-paid, price scaled by duration_days (see watch/pricing.ts).
+ * Creates a standing health-factor alert subscription, checked on a cron
+ * schedule (watch/cron.ts) and delivered via webhook only in v1.
+ */
+async function handleWatchCreate(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const body = await readBody(request);
+
+  const durationRaw = Number(body.duration_days);
+  if (!Number.isInteger(durationRaw) || durationRaw < MIN_DURATION_DAYS || durationRaw > MAX_DURATION_DAYS) {
+    return json({ error: `'duration_days' must be an integer between ${MIN_DURATION_DAYS} and ${MAX_DURATION_DAYS}` }, 400);
+  }
+  const durationDays = durationRaw;
+
+  // Payment amount depends on duration_days, so the resource URL is duration-specific —
+  // matches x402's model of "this exact resource costs this exact amount."
+  const resourceUrl = `${url.origin}/watch?duration_days=${durationDays}`;
+  const amountAtomic = computeWatchPriceAtomic(durationDays);
+  const description = watchDescription(durationDays);
+
+  const payment = await processPayment(request, resourceUrl, env, amountAtomic, description);
+  if (payment === null) return challenge402(resourceUrl, amountAtomic, description);
+  if (!payment.ok) return json({ error: payment.error }, payment.status);
+
+  const paymentHeaders = { "PAYMENT-RESPONSE": paymentResponseHeader(payment.settlement) };
+
+  const address = parseAddress(body.address ?? body.wallet ?? body.walletAddress);
+  if (!address) {
+    return json({ error: "missing or invalid 'wallet' — expected a 0x… EVM address (40 hex chars)" }, 400, paymentHeaders);
+  }
+  const chainRaw = String(body.chain ?? "").toLowerCase();
+  const chain = (CHAINS as string[]).includes(chainRaw) ? (chainRaw as ChainKey) : null;
+  if (!chain) {
+    return json({ error: `missing or unsupported 'chain' — use one of: ${CHAINS.join(", ")}` }, 400, paymentHeaders);
+  }
+  const protocolRaw = String(body.protocol ?? "");
+  const protocol = (PROTOCOLS as string[]).includes(protocolRaw) ? (protocolRaw as Protocol) : null;
+  if (!protocol) {
+    return json({ error: `missing or unsupported 'protocol' — use one of: ${PROTOCOLS.join(", ")}` }, 400, paymentHeaders);
+  }
+  const hfThreshold = Number(body.hf_threshold);
+  if (!Number.isFinite(hfThreshold) || hfThreshold <= 1.0 || hfThreshold > 3.0) {
+    return json({ error: "'hf_threshold' must be a number greater than 1.0 and at most 3.0" }, 400, paymentHeaders);
+  }
+  const notifyWebhook = parseWebhookUrl(body.notify_webhook);
+  if (!notifyWebhook) {
+    return json({ error: "missing or invalid 'notify_webhook' — expected an http(s):// URL" }, 400, paymentHeaders);
+  }
+
+  const now = new Date();
+  const sub: WatchSubscription = {
+    id: crypto.randomUUID(),
+    wallet: address,
+    chain,
+    protocol,
+    hf_threshold: hfThreshold,
+    notify_webhook: notifyWebhook,
+    created_at: now.toISOString(),
+    expires_at: new Date(now.getTime() + durationDays * 86_400_000).toISOString(),
+    last_checked_hf: null,
+    last_checked_at: null,
+    alert_state: "ok",
+    last_alert_sent_at: null,
+    check_seq: 0,
+  };
+
+  const { shard } = await createSubscription(env.WATCH_KV, sub);
+
+  return json(
+    {
+      service: "liquiscope-watch",
+      ...toStatus(sub),
+      shard,
+      check_interval_note: "Checked on a rotating cron schedule; latency scales gracefully with total subscriber count — see GET /watch/:id/status for last_checked_at.",
+    },
+    201,
+    paymentHeaders,
+  );
+}
+
+/** GET /watch/:id/status — free. */
+async function handleWatchStatus(id: string, env: Env): Promise<Response> {
+  const sub = await findSubscription(env.WATCH_KV, id);
+  if (!sub) return json({ error: "no subscription found for this id" }, 404);
+  return json({ service: "liquiscope-watch-status", ...toStatus(sub) });
+}
+
 export default {
-  /** Cron self-check: full engine path against a fixture wallet; logged for `wrangler tail`. */
-  async scheduled(_event: unknown, _env: Env, ctx: { waitUntil(p: Promise<unknown>): void }): Promise<void> {
+  /** Cron dispatch: the fixture self-check (10-min pattern) and the Watch Mode alert sweep (15-min pattern) share one Worker, split by event.cron. */
+  async scheduled(event: { cron: string }, env: Env, ctx: { waitUntil(p: Promise<unknown>): void }): Promise<void> {
+    if (event.cron === "*/15 * * * *") {
+      ctx.waitUntil(
+        (async () => {
+          try {
+            const summary = await runWatchCron(env.WATCH_KV);
+            console.log(JSON.stringify({ watchCron: "ok", ...summary }));
+          } catch (e) {
+            console.log(JSON.stringify({ watchCron: "failed", error: e instanceof Error ? e.message : String(e) }));
+          }
+        })(),
+      );
+      return;
+    }
+
     ctx.waitUntil(
       (async () => {
         const t0 = Date.now();
@@ -230,6 +350,17 @@ export default {
         return await handleReport(request, env);
       }
 
+      if (url.pathname === "/watch") {
+        if (request.method !== "POST") return json({ error: "use POST" }, 405);
+        return await handleWatchCreate(request, env);
+      }
+
+      const watchStatusMatch = url.pathname.match(/^\/watch\/([^/]+)\/status$/);
+      if (watchStatusMatch) {
+        if (request.method !== "GET") return json({ error: "use GET" }, 405);
+        return await handleWatchStatus(watchStatusMatch[1], env);
+      }
+
       return json(
         {
           service: "LiquiScope",
@@ -237,6 +368,8 @@ export default {
           endpoints: {
             "POST /check": "free — single-chain quick health factor + risk tier { address, chain? }",
             "POST /report": "x402-paid — full cross-protocol, cross-chain analysis { address }, plus portfolio_score, recommendations, and an optional ?stress_pct=-20 hypothetical price-move scenario",
+            "POST /watch": "x402-paid ($0.02/day, 3-day min) — recurring health-factor alert { wallet, chain, protocol, hf_threshold, notify_webhook, duration_days }, delivered via webhook when hf_threshold is crossed",
+            "GET /watch/:id/status": "free — subscription status, last check, alert state",
           },
         },
         404,
