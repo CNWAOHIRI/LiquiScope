@@ -55,6 +55,16 @@ export interface NormalizedPosition {
   /** Additive per-asset detail beyond the minimal normalized contract — used for richer report rendering only, never for risk-tier logic. */
   collateralAssets: AssetPosition[];
   debtAssets: AssetPosition[];
+  /**
+   * True only for sources listed in scan.ts's PROVISIONAL_SOURCES — reads that
+   * succeed and are structurally sound but have never been checked against a
+   * real live position (no fixture wallet found yet). Numbers are computed by
+   * the same formula as every other source, not guessed; this flag exists so
+   * callers can distinguish "battle-tested" from "correct by construction,
+   * unconfirmed" until a positive fixture promotes the source out of the list.
+   * Omitted (not `false`) on every normal position — only ever present as `true`.
+   */
+  provisional?: true;
 }
 
 export interface ChainScan {
@@ -74,10 +84,14 @@ export interface PortfolioSummary {
   positionCount: number;
 }
 
-/** protocol × chain → whether the scan for that source succeeded, for the coverage report. */
+/**
+ * protocol × chain → whether the scan for that source succeeded, for the
+ * coverage report. `beta` means the read succeeded but the source has no
+ * live positive fixture yet — see scan.ts's PROVISIONAL_SOURCES.
+ */
 export interface CoverageEntry {
   protocol: Protocol;
   chain: ChainKey;
-  status: "ok" | "error" | "unsupported";
+  status: "ok" | "beta" | "error" | "unsupported";
   error?: string;
 }

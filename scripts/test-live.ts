@@ -132,7 +132,7 @@ async function main() {
   const probeScans = await scanWallet("0x7c31e64c7dbcf7a973d26fdec55169bd35d20214");
   console.log("\n=== coverage matrix (protocol × chain) ===");
   for (const c of coverageMatrix(probeScans)) {
-    const mark = c.status === "ok" ? "✅" : c.status === "unsupported" ? "—" : "❌";
+    const mark = c.status === "ok" ? "✅" : c.status === "beta" ? "🧪" : c.status === "unsupported" ? "—" : "❌";
     console.log(`  ${mark} ${c.protocol.padEnd(14)} ${c.chain.padEnd(10)} ${c.status}${c.error ? `  (${c.error.slice(0, 80)})` : ""}`);
   }
 

@@ -17,6 +17,7 @@ import { getAddress, type Address } from "viem";
 import { ADAPTERS, aggregatePortfolio, coverageMatrix, scanWallet } from "./engine/scan";
 import { CHAINS } from "./engine/rpc";
 import type { ChainKey } from "./engine/types";
+import { toCompatPosition } from "./report/compat";
 import { generateSummary } from "./report/summary";
 import { RECOMMENDATIONS, worstTier } from "./report/template";
 import { challenge402, paymentResponseHeader, processPayment, type X402Env } from "./x402";
@@ -143,13 +144,19 @@ async function handleReport(request: Request, env: Env): Promise<Response> {
 
   const { summary, source } = await generateSummary(scans, env.ANTHROPIC_API_KEY);
   const portfolio = aggregatePortfolio(scans);
+  // Same string format the field has always had ("protocol (chain, chain, …)"),
+  // now correctly reflecting real coverage instead of the old hardcoded 3/2-chain
+  // lists. Field name/type unchanged from the live, reviewed response — see
+  // report/compat.ts for the full additive-only contract this endpoint honors.
+  const protocolsSummary = ADAPTERS.map((a) => `${a.protocol} (${a.supportedChains.join(", ")})`);
 
   return json(
     {
       service: "liquiscope-report",
       address,
       chainsScanned: scans.map((s) => s.chain),
-      protocolsScanned: ADAPTERS.map((a) => `${a.protocol} (${a.supportedChains.join(", ")})`),
+      protocols: protocolsSummary, // unchanged field name — content now accurate for 4 chains
+      protocolsScanned: protocolsSummary, // new, additive — same content, forward-looking name
       overallRiskTier: portfolio.overallTier,
       recommendation:
         portfolio.overallTier === "none" ? "No debt anywhere — nothing can be liquidated." : RECOMMENDATIONS[portfolio.overallTier],
@@ -157,11 +164,11 @@ async function handleReport(request: Request, env: Env): Promise<Response> {
         totalCollateralUsd: portfolio.totalCollateralUsd,
         totalDebtUsd: portfolio.totalDebtUsd,
         positionCount: portfolio.positionCount,
-        riskiestPosition: portfolio.riskiestPosition,
+        riskiestPosition: portfolio.riskiestPosition ? toCompatPosition(portfolio.riskiestPosition) : null,
       },
       summary,
       summarySource: source,
-      positions,
+      positions: positions.map(toCompatPosition),
       coverage,
       partialErrors: errors.length > 0 ? errors : undefined,
       timestamp: new Date().toISOString(),

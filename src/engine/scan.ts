@@ -20,6 +20,26 @@ import type { ChainKey, ChainScan, CoverageEntry, NormalizedPosition, PortfolioS
 /** The adapter registry — the only place that lists which protocols exist. */
 export const ADAPTERS: ProtocolAdapter[] = [AaveV3Adapter, CompoundV3Adapter];
 
+/**
+ * Sources whose reads succeed and are computed by the exact same formula as
+ * every other source, but have never been checked against a real live
+ * position — no fixture wallet was found despite genuine effort (free-RPC
+ * eth_getLogs limits made discovery impractical; see friction-log FL-012/013).
+ *
+ * Effect: coverageMatrix reports "beta" instead of "ok" for these, and every
+ * position returned from them is stamped `provisional: true` — so a live
+ * paid report never silently presents an unconfirmed number as equivalent to
+ * a battle-tested one.
+ *
+ * To promote: once a real position is found and its numbers hand-verified
+ * against the source contracts, remove the entry here.
+ */
+const PROVISIONAL_SOURCES: { protocol: Protocol; chain: ChainKey }[] = [{ protocol: "compound-v3", chain: "ethereum" }];
+
+function isProvisional(protocol: Protocol, chain: ChainKey): boolean {
+  return PROVISIONAL_SOURCES.some((s) => s.protocol === protocol && s.chain === chain);
+}
+
 /** Per-source wall-clock budget. One hung chain/protocol must not stall the others (they run in parallel) or the whole request (this caps it). */
 const SOURCE_TIMEOUT_MS = 12_000;
 
@@ -50,6 +70,9 @@ async function slice(
       SOURCE_TIMEOUT_MS,
       `${adapter.protocol}/${chain}`,
     );
+    if (isProvisional(adapter.protocol, chain)) {
+      for (const p of positions) p.provisional = true;
+    }
     return { positions };
   } catch (e) {
     return { positions: [], error: e instanceof Error ? e.message : String(e) };
@@ -108,7 +131,11 @@ export function coverageMatrix(scans: ChainScan[], chains: ChainKey[] = CHAINS):
         continue;
       }
       const err = scan?.errors.find((e) => e.protocol === protocol);
-      entries.push(err ? { protocol, chain, status: "error", error: err.error } : { protocol, chain, status: "ok" });
+      if (err) {
+        entries.push({ protocol, chain, status: "error", error: err.error });
+      } else {
+        entries.push({ protocol, chain, status: isProvisional(protocol, chain) ? "beta" : "ok" });
+      }
     }
   }
   return entries;
