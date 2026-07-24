@@ -9,7 +9,7 @@
  *   <  1.0   liquidatable (eligible for liquidation right now)
  */
 
-import type { RiskTier } from "./types";
+import type { DominantCollateral, RiskTier } from "./types";
 
 export function tierFor(healthFactor: number): RiskTier {
   if (healthFactor >= 1.5) return "safe";
@@ -42,7 +42,7 @@ export interface CollateralLeg {
 export function dominantLiquidationPrice(
   legs: CollateralLeg[],
   totalDebtUsd: number,
-): { symbol: string; currentPriceUsd: number; liquidationPriceUsd: number; dropToLiquidation: number } | undefined {
+): DominantCollateral | undefined {
   if (totalDebtUsd <= 0 || legs.length === 0) return undefined;
   const dominant = legs.reduce((a, b) => (b.usdValue > a.usdValue ? b : a));
   if (dominant.usdValue <= 0 || dominant.liquidationThreshold <= 0 || dominant.priceUsd <= 0) return undefined;
@@ -59,7 +59,7 @@ export function dominantLiquidationPrice(
     symbol: dominant.symbol,
     currentPriceUsd: dominant.priceUsd,
     liquidationPriceUsd: round(clamped, 6),
-    dropToLiquidation: round(1 - clamped / dominant.priceUsd, 4),
+    dropToLiquidationPct: round(1 - clamped / dominant.priceUsd, 4),
   };
 }
 

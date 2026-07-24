@@ -1,22 +1,33 @@
 /**
- * Compound v3 (Comet) reader. Unlike Aave there is no aggregate health factor;
- * we compose the equivalent per market:
+ * Compound v3 (Comet) adapter. Unlike Aave there is no aggregate health
+ * factor; we compose the equivalent per market:
  *
- *   HF = sum(collateral_i_usd * liquidateCollateralFactor_i) / borrow_usd
+ *   HF_equivalent = Σ_i (collateral_i_usd × liquidateCollateralFactor_i) / debt_usd
+ *
+ * i.e. the same weighted-collateral-over-debt ratio Aave's on-chain HF
+ * represents, built from Comet's own per-asset `liquidateCollateralFactor`
+ * (from `getAssetInfo`) instead of a contract-provided aggregate. `debt_usd`
+ * is `borrowBalanceOf` priced via the market's own base-token feed. This is
+ * exact, not an approximation — Comet liquidates a whole-account position
+ * the moment this same ratio crosses 1, so it's the correct HF-equivalent by
+ * construction, not just a stylistic mirror of Aave's formula.
  *
  * Market addresses are the Comet proxies from the canonical
- * compound-finance/comet deployments/ folder (verified 2026-07-11).
+ * compound-finance/comet deployments/ folder (re-verified 2026-07-24;
+ * Base/Arbitrum addresses unchanged since 2026-07-11; Ethereum mainnet added).
  *
  * Price caveat: WETH-market price feeds are denominated in ETH, not USD, so
- * those values are converted via the chain's ETH/USD price (from the Aave
- * oracle we already resolve). All other markets' feeds are USD, 8 decimals.
+ * those values are converted via the chain's ETH/USD price (shared with the
+ * Aave adapter — see ../ethPrice.ts). All other markets' feeds are USD, 8
+ * decimals. Verified empirically per chain during live testing, not assumed.
  */
 
 import { parseAbi, type Address, type PublicClient } from "viem";
-import { getEthUsdPrice } from "./ethPrice";
-import { getClient } from "./rpc";
-import { DUST_USD, dominantLiquidationPrice, round, tierFor, type CollateralLeg } from "./risk";
-import type { ChainKey, ProtocolPosition } from "./types";
+import { getEthUsdPrice } from "../ethPrice";
+import { getClient } from "../rpc";
+import { DUST_USD, dominantLiquidationPrice, round, tierFor, type CollateralLeg } from "../risk";
+import type { ChainKey, NormalizedPosition } from "../types";
+import type { ProtocolAdapter } from "./types";
 
 interface CometMarket {
   label: string;
@@ -26,6 +37,10 @@ interface CometMarket {
 }
 
 const MARKETS: Partial<Record<ChainKey, CometMarket[]>> = {
+  ethereum: [
+    { label: "USDC", address: "0xc3d688B66703497DAA19211EEdff47f25384cdc3", ethDenominated: false },
+    { label: "WETH", address: "0xA17581A9E3356d9A858b789D68B4d866e593aE94", ethDenominated: true },
+  ],
   base: [
     { label: "USDC", address: "0xb125E6687d4313864e53df431d5425969c15Eb2F", ethDenominated: false },
     { label: "WETH", address: "0x46e6b214b524310239732D51387075E0e70970bf", ethDenominated: true },
@@ -61,7 +76,7 @@ async function readMarket(
   chain: ChainKey,
   market: CometMarket,
   user: Address,
-): Promise<ProtocolPosition | null> {
+): Promise<NormalizedPosition | null> {
   const comet = market.address;
   const [borrowRaw, baseSupplyRaw, numAssets] = await Promise.all([
     client.readContract({ address: comet, abi: cometAbi, functionName: "borrowBalanceOf", args: [user] }),
@@ -97,26 +112,24 @@ async function readMarket(
   ]);
   const symbols = await Promise.all(
     involved.map((info) =>
-      client
-        .readContract({ address: info.asset, abi: erc20Abi, functionName: "symbol" })
-        .catch(() => "?"),
+      client.readContract({ address: info.asset, abi: erc20Abi, functionName: "symbol" }).catch(() => "?"),
     ),
   );
 
   const basePriceUsd = (Number(basePriceRaw) / PRICE_UNIT) * toUsd;
   const borrowAmount = Number(borrowRaw) / Number(baseScale);
-  const totalDebtUsd = round(borrowAmount * basePriceUsd, 2);
+  const debtUsd = round(borrowAmount * basePriceUsd, 2);
 
-  const collateral: ProtocolPosition["collateral"] = [];
+  const collateralAssets: NormalizedPosition["collateralAssets"] = [];
   const legs: CollateralLeg[] = [];
-  let totalCollateralUsd = 0;
+  let collateralUsd = 0;
 
   involved.forEach((info, i) => {
     const priceUsd = (Number(collateralPrices[i]) / PRICE_UNIT) * toUsd;
     const amount = Number(collateralBalances[assetInfos.indexOf(info)][0]) / Number(info.scale);
     const usdValue = round(amount * priceUsd, 2);
-    totalCollateralUsd += usdValue;
-    collateral.push({ symbol: symbols[i], amount: round(amount, 6), usdValue });
+    collateralUsd += usdValue;
+    collateralAssets.push({ symbol: symbols[i], amount: round(amount, 6), usdValue });
     legs.push({
       symbol: symbols[i],
       usdValue,
@@ -128,34 +141,41 @@ async function readMarket(
   if (baseSupplyRaw > 0n) {
     const amount = Number(baseSupplyRaw) / Number(baseScale);
     const usdValue = round(amount * basePriceUsd, 2);
-    totalCollateralUsd += usdValue;
+    collateralUsd += usdValue;
     // Supplied base earns yield but is not liquidatable collateral — no risk leg.
-    collateral.push({ symbol: `${market.label} (supplied)`, amount: round(amount, 6), usdValue });
+    collateralAssets.push({ symbol: `${market.label} (supplied)`, amount: round(amount, 6), usdValue });
   }
 
-  if (totalCollateralUsd < DUST_USD && totalDebtUsd < DUST_USD) return null;
+  if (collateralUsd < DUST_USD && debtUsd < DUST_USD) return null;
 
   const weighted = legs.reduce((s, l) => s + l.usdValue * l.liquidationThreshold, 0);
-  const healthFactor = totalDebtUsd <= 0 ? Infinity : round(weighted / totalDebtUsd, 4);
+  const healthFactor = debtUsd <= 0 ? Infinity : round(weighted / debtUsd, 4);
+  const dominant = dominantLiquidationPrice(legs, debtUsd);
 
   return {
     protocol: "compound-v3",
     chain,
     market: market.label,
+    collateralUsd: round(collateralUsd, 2),
+    debtUsd,
     healthFactor,
     tier: tierFor(healthFactor),
-    totalCollateralUsd: round(totalCollateralUsd, 2),
-    totalDebtUsd,
-    collateral,
-    debt: totalDebtUsd > 0 ? [{ symbol: market.label, amount: round(borrowAmount, 6), usdValue: totalDebtUsd }] : [],
-    dominantCollateral: dominantLiquidationPrice(legs, totalDebtUsd),
+    liquidationPrice: dominant?.liquidationPriceUsd ?? null,
+    dominantCollateral: dominant ?? null,
+    dropToLiquidationPct: dominant?.dropToLiquidationPct ?? null,
+    collateralAssets,
+    debtAssets: debtUsd > 0 ? [{ symbol: market.label, amount: round(borrowAmount, 6), usdValue: debtUsd }] : [],
   };
 }
 
-export async function readCompound(chain: ChainKey, userAddress: Address): Promise<ProtocolPosition[]> {
-  const markets = MARKETS[chain];
-  if (!markets) return [];
-  const client = getClient(chain);
-  const results = await Promise.all(markets.map((m) => readMarket(client, chain, m, userAddress)));
-  return results.filter((r): r is ProtocolPosition => r !== null);
-}
+export const CompoundV3Adapter: ProtocolAdapter = {
+  protocol: "compound-v3",
+  supportedChains: ["ethereum", "base", "arbitrum"],
+  async getPositions(chain, wallet) {
+    const markets = MARKETS[chain];
+    if (!markets) return [];
+    const client = getClient(chain);
+    const results = await Promise.all(markets.map((m) => readMarket(client, chain, m, wallet)));
+    return results.filter((r): r is NormalizedPosition => r !== null);
+  },
+};

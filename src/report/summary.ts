@@ -21,7 +21,7 @@ export async function generateSummary(
   const fallback = templateSummary(scans);
   if (!apiKey) return { summary: fallback, source: "template" };
 
-  const key = JSON.stringify(scans.map((s) => [s.chain, s.positions.map((p) => [p.protocol, p.market, p.tier, p.totalDebtUsd, p.totalCollateralUsd])]));
+  const key = JSON.stringify(scans.map((s) => [s.chain, s.positions.map((p) => [p.protocol, p.market, p.tier, p.debtUsd, p.collateralUsd])]));
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < CACHE_TTL_MS) {
     return { summary: hit.summary, source: hit.source as "llm" | "template" };
@@ -39,7 +39,7 @@ export async function generateSummary(
         model: MODEL,
         max_tokens: 512,
         system:
-          "You are LiquiScope, a DeFi liquidation-risk analyst. Given position scan data (JSON), write a plain-language risk summary for the wallet owner: overall risk level first, then each position's key numbers (collateral, debt, health factor, how far the dominant collateral price is from liquidation), then ONE concrete recommendation matched to the worst risk tier. Be precise with numbers, no hedging, no preamble, under 180 words. Plain text only.",
+          "You are LiquiScope, a cross-protocol, cross-chain DeFi liquidation-risk analyst. Given position scan data (JSON) covering multiple lending protocols and chains for one wallet, write a plain-language risk summary for the wallet owner: overall risk level first, then which single position across all protocols/chains is riskiest (name the protocol, chain, debt asset, health factor, and the price move that triggers liquidation), then each position's key numbers (collateral, debt, health factor, distance to liquidation), then ONE concrete recommendation matched to the worst risk tier. Be precise with numbers, no hedging, no preamble, under 200 words. Plain text only.",
         messages: [{ role: "user", content: JSON.stringify(scans) }],
       }),
       signal: AbortSignal.timeout(TIMEOUT_MS),

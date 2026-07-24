@@ -6,7 +6,7 @@
  */
 
 import { createPublicClient, fallback, http, type PublicClient } from "viem";
-import { arbitrum, base, mainnet } from "viem/chains";
+import { arbitrum, base, mainnet, optimism } from "viem/chains";
 import type { ChainKey } from "./types";
 
 const RPCS: Record<ChainKey, string[]> = {
@@ -28,9 +28,15 @@ const RPCS: Record<ChainKey, string[]> = {
     "https://arbitrum.llamarpc.com",
     "https://1rpc.io/arb",
   ],
+  optimism: [
+    "https://optimism-rpc.publicnode.com",
+    "https://mainnet.optimism.io",
+    "https://optimism.llamarpc.com",
+    "https://1rpc.io/op",
+  ],
 };
 
-const VIEM_CHAINS = { ethereum: mainnet, base, arbitrum } as const;
+const VIEM_CHAINS = { ethereum: mainnet, base, arbitrum, optimism } as const;
 
 const clients = new Map<ChainKey, PublicClient>();
 
@@ -50,4 +56,4 @@ export function getClient(chain: ChainKey): PublicClient {
   return client;
 }
 
-export const CHAINS: ChainKey[] = ["ethereum", "base", "arbitrum"];
+export const CHAINS: ChainKey[] = ["ethereum", "base", "arbitrum", "optimism"];

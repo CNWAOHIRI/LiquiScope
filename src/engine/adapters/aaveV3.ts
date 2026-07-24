@@ -1,31 +1,43 @@
 /**
- * Aave v3 reader. Everything is resolved at runtime from the immutable
- * PoolAddressesProvider (one hardcoded address per chain) so Pool / Oracle /
- * DataProvider upgrades never break us.
+ * Aave v3 adapter. Everything is resolved at runtime from the immutable
+ * PoolAddressesProvider (one hardcoded address per chain, verified against
+ * bgd-labs/aave-address-book) so Pool / Oracle / DataProvider upgrades never
+ * break us.
  *
  * Reads per user:
  *   1. pool.getUserAccountData        — aggregate HF (authoritative), totals, avg LT
  *   2. dataProvider.getAllReservesTokens + getUserReserveData (multicalled)
  *   3. per involved reserve: config (decimals, LT) + oracle prices (multicalled)
  *
- * Base currency on all three markets is USD with 8 decimals.
+ * Base currency on all four markets is USD with 8 decimals.
  *
  * E-mode caveat: per-reserve liquidation thresholds understate e-mode users'
  * real thresholds. When the user is in an e-mode category we substitute the
  * position-wide weighted-average LT (from getUserAccountData) on every leg —
  * exact for single-collateral positions, a close approximation otherwise.
  * The health factor itself is always the on-chain aggregate, never recomputed.
+ *
+ * `resolveContracts` / `oracleAbi` are also imported by ../ethPrice.ts, which
+ * reuses this adapter's price oracle as a shared ETH/USD source for the
+ * Compound adapter's ETH-denominated Comet feeds — a price-utility reuse,
+ * not a report-layer or risk-logic dependency between adapters.
  */
 
 import { parseAbi, type Address, type PublicClient } from "viem";
-import { getClient } from "./rpc";
-import { DUST_USD, dominantLiquidationPrice, round, tierFor, type CollateralLeg } from "./risk";
-import type { ChainKey, ProtocolPosition } from "./types";
+import { getClient } from "../rpc";
+import { DUST_USD, dominantLiquidationPrice, round, tierFor, type CollateralLeg } from "../risk";
+import type { ChainKey, NormalizedPosition } from "../types";
+import type { ProtocolAdapter } from "./types";
 
+// Verified against bgd-labs/aave-address-book (src/AaveV3<Chain>.sol), 2026-07-24.
+// Optimism and Arbitrum share the same address — confirmed via each chain's
+// own etherscan-style source comment, not a copy-paste artifact: Aave
+// deploys this contract via a deterministic factory on some chains.
 const ADDRESSES_PROVIDER: Record<ChainKey, Address> = {
   ethereum: "0x2f39d218133AFaB8F2B819B1066c7E434Ad94E9e",
   base: "0xe20fCBdBfFC4Dd138cE8b2E6FBb6CB49777ad64D",
   arbitrum: "0xa97684ead0e402dC232d5A977953DF7ECBaB3CDb",
+  optimism: "0xa97684ead0e402dC232d5A977953DF7ECBaB3CDb",
 };
 
 const providerAbi = parseAbi([
@@ -45,9 +57,7 @@ const dataProviderAbi = parseAbi([
   "function getReserveConfigurationData(address asset) view returns (uint256 decimals, uint256 ltv, uint256 liquidationThreshold, uint256 liquidationBonus, uint256 reserveFactor, bool usageAsCollateralEnabled, bool borrowingEnabled, bool stableBorrowRateEnabled, bool isActive, bool isFrozen)",
 ]);
 
-export const oracleAbi = parseAbi([
-  "function getAssetsPrices(address[] assets) view returns (uint256[])",
-]);
+export const oracleAbi = parseAbi(["function getAssetsPrices(address[] assets) view returns (uint256[])"]);
 
 interface Contracts {
   pool: Address;
@@ -73,7 +83,7 @@ export async function resolveContracts(chain: ChainKey, client: PublicClient): P
 
 const BASE_UNIT = 1e8; // USD, 8 decimals
 
-export async function readAave(chain: ChainKey, user: Address): Promise<ProtocolPosition | null> {
+async function readOne(chain: ChainKey, user: Address): Promise<NormalizedPosition | null> {
   const client = getClient(chain);
   const { pool, oracle, dataProvider } = await resolveContracts(chain, client);
 
@@ -88,8 +98,7 @@ export async function readAave(chain: ChainKey, user: Address): Promise<Protocol
   const totalDebtUsd = Number(totalDebtBase) / BASE_UNIT;
   if (totalCollateralUsd < DUST_USD && totalDebtUsd < DUST_USD) return null;
 
-  const healthFactor =
-    totalDebtBase === 0n ? Infinity : round(Number(healthFactorRay) / 1e18, 4);
+  const healthFactor = totalDebtBase === 0n ? Infinity : round(Number(healthFactorRay) / 1e18, 4);
 
   const reserves = await client.readContract({
     address: dataProvider,
@@ -133,7 +142,7 @@ export async function readAave(chain: ChainKey, user: Address): Promise<Protocol
       functionName: "getAssetsPrices",
       args: [involved.map((r) => r.tokenAddress)],
     }),
-    ]);
+  ]);
 
   const eMode = await client.readContract({
     address: pool,
@@ -143,8 +152,8 @@ export async function readAave(chain: ChainKey, user: Address): Promise<Protocol
   });
   const avgLt = Number(avgLtBps) / 10_000;
 
-  const collateral: ProtocolPosition["collateral"] = [];
-  const debt: ProtocolPosition["debt"] = [];
+  const collateralAssets: NormalizedPosition["collateralAssets"] = [];
+  const debtAssets: NormalizedPosition["debtAssets"] = [];
   const legs: CollateralLeg[] = [];
 
   involved.forEach((r, i) => {
@@ -154,7 +163,7 @@ export async function readAave(chain: ChainKey, user: Address): Promise<Protocol
     if (r.aToken > 0n) {
       const amount = Number(r.aToken) / scale;
       const usdValue = round(amount * priceUsd, 2);
-      collateral.push({ symbol: r.symbol, amount: round(amount, 6), usdValue });
+      collateralAssets.push({ symbol: r.symbol, amount: round(amount, 6), usdValue });
       if (r.usageAsCollateral) {
         legs.push({
           symbol: r.symbol,
@@ -166,20 +175,33 @@ export async function readAave(chain: ChainKey, user: Address): Promise<Protocol
     }
     if (r.debt > 0n) {
       const amount = Number(r.debt) / scale;
-      debt.push({ symbol: r.symbol, amount: round(amount, 6), usdValue: round(amount * priceUsd, 2) });
+      debtAssets.push({ symbol: r.symbol, amount: round(amount, 6), usdValue: round(amount * priceUsd, 2) });
     }
   });
+
+  const dominant = dominantLiquidationPrice(legs, totalDebtUsd);
 
   return {
     protocol: "aave-v3",
     chain,
     market: "core",
+    collateralUsd: round(totalCollateralUsd, 2),
+    debtUsd: round(totalDebtUsd, 2),
     healthFactor,
     tier: tierFor(healthFactor),
-    totalCollateralUsd: round(totalCollateralUsd, 2),
-    totalDebtUsd: round(totalDebtUsd, 2),
-    collateral,
-    debt,
-    dominantCollateral: dominantLiquidationPrice(legs, totalDebtUsd),
+    liquidationPrice: dominant?.liquidationPriceUsd ?? null,
+    dominantCollateral: dominant ?? null,
+    dropToLiquidationPct: dominant?.dropToLiquidationPct ?? null,
+    collateralAssets,
+    debtAssets,
   };
 }
+
+export const AaveV3Adapter: ProtocolAdapter = {
+  protocol: "aave-v3",
+  supportedChains: ["ethereum", "base", "arbitrum", "optimism"],
+  async getPositions(chain, wallet) {
+    const p = await readOne(chain, wallet);
+    return p ? [p] : [];
+  },
+};
