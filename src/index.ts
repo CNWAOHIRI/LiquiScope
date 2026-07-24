@@ -31,6 +31,10 @@ import { toStatus, type WatchSubscription } from "./watch/types";
 import { probeLookback } from "./proof/lookback";
 import { replayTrajectory } from "./proof/replay";
 import { PROOF_SOURCES } from "./proof/readers";
+import { callerIdFromPayer, callerIdFromRequest, classify } from "./stats/callerId";
+import { readStats, recordCall } from "./stats/store";
+
+type Ctx = { waitUntil(p: Promise<unknown>): void };
 
 interface Env extends X402Env {
   ANTHROPIC_API_KEY?: string;
@@ -83,7 +87,10 @@ function rateLimited(ip: string): boolean {
  * internal NormalizedPosition renamed them to collateralUsd/debtUsd — this
  * is the back-compat seam). The only additive change is a 4th chain choice.
  */
-async function handleCheck(request: Request): Promise<Response> {
+async function handleCheck(request: Request, env: Env, ctx: Ctx): Promise<Response> {
+  ctx.waitUntil(
+    callerIdFromRequest(request).then((id) => recordCall(env.WATCH_KV, classify(id))),
+  );
   const body = await readBody(request);
   const address = parseAddress(body.address ?? body.wallet ?? body.walletAddress);
   if (!address) {
@@ -127,12 +134,18 @@ async function handleCheck(request: Request): Promise<Response> {
  * fanned out in parallel, with a portfolio-level aggregate and a coverage
  * matrix so the caller can see exactly what was (and wasn't) checked.
  */
-async function handleReport(request: Request, env: Env): Promise<Response> {
+async function handleReport(request: Request, env: Env, ctx: Ctx): Promise<Response> {
   const url = new URL(request.url);
   const resourceUrl = url.origin + "/report";
   const payment = await processPayment(request, resourceUrl, env);
   if (payment === null) return challenge402(resourceUrl);
   if (!payment.ok) return json({ error: payment.error }, payment.status);
+  ctx.waitUntil(
+    (async () => {
+      const id = callerIdFromPayer(payment.settlement.payer) ?? (await callerIdFromRequest(request));
+      await recordCall(env.WATCH_KV, classify(id));
+    })(),
+  );
 
   const body = await readBody(request);
   const address = parseAddress(body.address ?? body.wallet ?? body.walletAddress);
@@ -220,7 +233,7 @@ function parseWebhookUrl(raw: unknown): string | null {
  * Creates a standing health-factor alert subscription, checked on a cron
  * schedule (watch/cron.ts) and delivered via webhook only in v1.
  */
-async function handleWatchCreate(request: Request, env: Env): Promise<Response> {
+async function handleWatchCreate(request: Request, env: Env, ctx: Ctx): Promise<Response> {
   const url = new URL(request.url);
   const body = await readBody(request);
 
@@ -239,6 +252,12 @@ async function handleWatchCreate(request: Request, env: Env): Promise<Response> 
   const payment = await processPayment(request, resourceUrl, env, amountAtomic, description);
   if (payment === null) return challenge402(resourceUrl, amountAtomic, description);
   if (!payment.ok) return json({ error: payment.error }, payment.status);
+  ctx.waitUntil(
+    (async () => {
+      const id = callerIdFromPayer(payment.settlement.payer) ?? (await callerIdFromRequest(request));
+      await recordCall(env.WATCH_KV, classify(id));
+    })(),
+  );
 
   const paymentHeaders = { "PAYMENT-RESPONSE": paymentResponseHeader(payment.settlement) };
 
@@ -301,6 +320,19 @@ async function handleWatchStatus(id: string, env: Env): Promise<Response> {
   const sub = await findSubscription(env.WATCH_KV, id);
   if (!sub) return json({ error: "no subscription found for this id" }, 404);
   return json({ service: "liquiscope-watch-status", ...toStatus(sub) });
+}
+
+/**
+ * GET /stats — free, public. Landing-page "agents calling now" data source.
+ * self/external split is best-effort: self is only the LiquiScope Agentic
+ * Wallet's own payer address (our real self-test calls); external is any
+ * other identifiable caller (payer address, or IP hash for free /check
+ * calls); unclassified is calls with no derivable identity at all (no
+ * cf-connecting-ip header) — a real bucket, not folded into either side.
+ */
+async function handleStats(env: Env): Promise<Response> {
+  const counts = await readStats(env.WATCH_KV);
+  return json({ service: "liquiscope-stats", ...counts });
 }
 
 const PROOF_DESCRIPTION = "LiquiScope /proof — historical health-factor replay (\"would-have-warned-you\" mode)";
@@ -425,26 +457,31 @@ export default {
     );
   },
 
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: Ctx): Promise<Response> {
     const url = new URL(request.url);
     try {
       if (url.pathname === "/health") return json({ status: "ok", service: "liquiscope" });
+
+      if (url.pathname === "/stats") {
+        if (request.method !== "GET") return json({ error: "use GET" }, 405);
+        return await handleStats(env);
+      }
 
       if (url.pathname === "/check") {
         if (request.method !== "POST") return json({ error: "use POST" }, 405);
         const ip = request.headers.get("cf-connecting-ip") ?? "unknown";
         if (rateLimited(ip)) return json({ error: "rate limit exceeded (30/min) — please slow down" }, 429);
-        return await handleCheck(request);
+        return await handleCheck(request, env, ctx);
       }
 
       if (url.pathname === "/report") {
         if (request.method !== "POST") return json({ error: "use POST" }, 405);
-        return await handleReport(request, env);
+        return await handleReport(request, env, ctx);
       }
 
       if (url.pathname === "/watch") {
         if (request.method !== "POST") return json({ error: "use POST" }, 405);
-        return await handleWatchCreate(request, env);
+        return await handleWatchCreate(request, env, ctx);
       }
 
       const watchStatusMatch = url.pathname.match(/^\/watch\/([^/]+)\/status$/);
@@ -468,6 +505,7 @@ export default {
             "POST /watch": "x402-paid ($0.02/day, 3-day min) — recurring health-factor alert { wallet, chain, protocol, hf_threshold, notify_webhook, duration_days }, delivered via webhook when hf_threshold is crossed",
             "GET /watch/:id/status": "free — subscription status, last check, alert state",
             "GET /proof": "x402-paid ($0.15) — historical health-factor replay ?wallet=&chain=&protocol=, over the best achievable free-tier RPC lookback; flags any past liquidation-eligible crossings",
+            "GET /stats": "free — total/self/external/unclassified call counts across /check, /report, /watch, since first recorded call",
           },
         },
         404,
