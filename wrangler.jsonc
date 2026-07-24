@@ -4,9 +4,16 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-07-01",
   "workers_dev": true,
-  // Uptime self-check: exercises the full engine path every 10 min and logs
-  // the outcome (visible via `wrangler tail`); review requires "stays live".
-  "triggers": { "crons": ["*/10 * * * *"] }
+  // Two cron patterns, one Worker, split by event.cron in scheduled():
+  //  - */10: uptime self-check, exercises the full engine path, logs via `wrangler tail`
+  //  - */15: Watch Mode alert sweep (see watch/cron.ts, watch/budget.ts for the shard-rotation design)
+  "triggers": { "crons": ["*/10 * * * *", "*/15 * * * *"] },
+  "kv_namespaces": [
+    {
+      "binding": "WATCH_KV",
+      "id": "724094ebd3974544bf199f7b95d30cec"
+    }
+  ]
   // Secrets (set via `wrangler secret put`, mirrored in .dev.vars for local dev):
   //   ANTHROPIC_API_KEY — report-layer LLM summaries (deterministic fallback if absent)
 }

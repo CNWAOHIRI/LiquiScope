@@ -19,6 +19,16 @@ export interface ProtocolAdapter {
    * zero-balance positions are already filtered out by the adapter. Throws
    * on read failure; the orchestrator is responsible for the timeout and
    * per-source error isolation, not the adapter itself.
+   *
+   * `blockNumber`, when given, pins every on-chain read to that historical
+   * block instead of "latest" — used by GET /proof to replay past health
+   * factors with the exact same math and same code path as a live read
+   * (never a separate/approximate historical model). Omitted (undefined)
+   * for every existing caller — additive, and the on-chain infra addresses
+   * (pool/oracle/data-provider) are still resolved at their CURRENT
+   * addresses even for historical reads, since these are immutable
+   * proxies that don't change across a market's lifetime; only the state
+   * values (balances, prices) are read as-of the historical block.
    */
-  getPositions(chain: ChainKey, wallet: Address): Promise<NormalizedPosition[]>;
+  getPositions(chain: ChainKey, wallet: Address, blockNumber?: bigint): Promise<NormalizedPosition[]>;
 }

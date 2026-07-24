@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>LiquiScope — methodology &amp; coverage</title>
+<meta name="description" content="Exactly how LiquiScope computes health factor and liquidation price per protocol, what price sources it uses, and current chain/protocol coverage." />
+<link rel="stylesheet" href="style.css" />
+<style>
+  .wrap { max-width: 760px; }
+  h2 { font-size: 1.15rem; margin-top: 36px; }
+  h3 { font-size: 1rem; margin-top: 24px; }
+  code { background: var(--bg); border: 1px solid var(--panel-border); border-radius: 4px; padding: 1px 5px; font-size: 0.9em; }
+  pre { background: var(--bg); border: 1px solid var(--panel-border); border-radius: 8px; padding: 14px 16px; overflow-x: auto; font-size: 0.86rem; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--panel-border); }
+  th { color: var(--text-dim); font-weight: 600; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.03em; }
+  .status-ok { color: var(--safe); font-weight: 600; }
+  .status-beta { color: var(--watch); font-weight: 600; }
+  .status-unsupported { color: var(--text-dim); }
+  p, li { color: var(--text); }
+  .note { color: var(--text-dim); font-size: 0.88rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="hero" style="text-align:left; margin-bottom:12px;">
+    <h1 style="font-size:1.5rem;">Methodology &amp; coverage</h1>
+    <p class="tagline">Precise, not promotional — this page exists so a technical reader can verify every number LiquiScope reports.</p>
+  </header>
+
+  <div class="badge-readonly">
+    <span class="dot" aria-hidden="true"></span>
+    <span><strong>Read-only.</strong> We never touch your funds, keys, or approvals — LiquiScope only reads public chain data.</span>
+  </div>
+
+  <h2>Health factor, per protocol</h2>
+
+  <h3>Aave v3</h3>
+  <p>
+    Health factor is read directly from the protocol's own on-chain aggregate —
+    <code>Pool.getUserAccountData(user).healthFactor</code> — never recomputed or
+    approximated. Liquidation prices are derived from the same call's
+    <code>currentLiquidationThreshold</code> and per-reserve data:
+  </p>
+  <pre>HF = weightedCollateralUsd / debtUsd
+liquidationPrice(dominant asset) solves HF = 1 for that asset's price,
+holding every other balance and price constant</pre>
+  <p class="note">
+    E-mode caveat: per-reserve liquidation thresholds understate an e-mode
+    user's real threshold. When the wallet is in an e-mode category, the
+    position-wide weighted-average threshold (from the same
+    <code>getUserAccountData</code> call) is substituted on every leg — exact
+    for single-collateral positions, a close approximation otherwise. The
+    health factor itself is always the on-chain aggregate, e-mode or not.
+  </p>
+
+  <h3>Compound v3 (Comet)</h3>
+  <p>
+    Compound has no single on-chain health-factor field, so LiquiScope composes
+    the equivalent from the same inputs Comet itself liquidates against:
+  </p>
+  <pre>HF = Σ(collateral_i_usd × liquidateCollateralFactor_i) / debt_usd</pre>
+  <p>
+    <code>liquidateCollateralFactor</code> comes from each market's
+    <code>getAssetInfo</code>; collateral balances from <code>userCollateral</code>;
+    debt from <code>borrowBalanceOf</code>, priced via the market's own base-token
+    feed. This is the exact ratio Comet liquidates a whole-account position
+    against the moment it crosses 1 — not a stylistic mirror of Aave's formula,
+    the same underlying accounting.
+  </p>
+  <p class="note">
+    WETH-market price feeds are denominated in ETH, not USD — converted via
+    the chain's Aave oracle WETH/USD price (shared price data only; Compound's
+    risk logic never depends on Aave's risk logic). Verified empirically per
+    chain, not assumed.
+  </p>
+
+  <h2>Portfolio score</h2>
+  <p>A single 0-100 number summarizing a wallet's entire cross-protocol, cross-chain exposure:</p>
+  <pre>base_score  = piecewise-linear interpolation of the WORST health factor
+              across all positions, anchored at the same tier breakpoints
+              used everywhere else (1.0→10, 1.05→30, 1.15→55, 1.5→80, 3.0→100)
+concentration_penalty = up to 15 points, scaled by the Herfindahl-Hirschman
+              Index of collateral value across unique asset symbols
+final_score = round(base_score × (1 − 0.15 × HHI))</pre>
+  <p class="note">Zero debt-bearing positions returns a null score with label <code>no_active_positions</code> — never a fabricated number.</p>
+
+  <h2>Price sources</h2>
+  <ul>
+    <li><strong>Aave v3:</strong> the protocol's own on-chain price oracle (<code>getAssetsPrices</code>), read at the same block as the position data.</li>
+    <li><strong>Compound v3:</strong> each Comet market's own <code>getPrice</code> feed per asset, plus the base-token feed for debt.</li>
+    <li><strong>Historical replay (<code>GET /proof</code>):</strong> the identical oracle reads above, pinned to a historical block instead of the latest one — never a separate historical price model.</li>
+  </ul>
+
+  <h2>What "beta" / "provisional" means</h2>
+  <p>
+    A source is labeled <code>beta</code> in the coverage matrix when its reads
+    succeed and are computed by the exact same formula as every "ok" source,
+    but have never been checked against a real, live position — no fixture
+    wallet was found for that specific protocol×chain combination. Every
+    position returned from a beta source is stamped <code>provisional: true</code>,
+    so a paid report never silently presents an unconfirmed number as
+    equivalent to a battle-tested one.
+  </p>
+
+  <h2>Current coverage</h2>
+  <table>
+    <thead><tr><th>Protocol</th><th>Ethereum</th><th>Base</th><th>Arbitrum</th><th>Optimism</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Aave v3</td>
+        <td class="status-ok">ok</td>
+        <td class="status-ok">ok</td>
+        <td class="status-ok">ok</td>
+        <td class="status-ok">ok</td>
+      </tr>
+      <tr>
+        <td>Compound v3</td>
+        <td class="status-beta">beta</td>
+        <td class="status-ok">ok</td>
+        <td class="status-ok">ok</td>
+        <td class="status-unsupported">unsupported</td>
+      </tr>
+    </tbody>
+  </table>
+  <p class="note">
+    Compound v3 / Ethereum is beta because free-tier RPCs cap <code>eth_getLogs</code>
+    ranges too tightly for event-based wallet discovery to be practical (as
+    tight as 50 blocks on some providers) — a free-infrastructure ceiling, not
+    an archive-tier gap that would ease with more waiting. Re-evaluated
+    2026-07-24, still beta, same reason. This table is hardcoded and needs a
+    manual update if coverage changes — <code>GET /report</code>'s live
+    <code>coverage</code> field is the source of truth if the two ever disagree.
+  </p>
+
+  <footer>
+    <a href="index.html">← back</a>
+    &middot;
+    <a href="https://github.com/CNWAOHIRI/LiquiScope" target="_blank" rel="noopener">GitHub</a>
+    &middot;
+    <a href="https://github.com/CNWAOHIRI/LiquiScope/blob/main/docs/friction-log.md" target="_blank" rel="noopener">Friction log</a>
+  </footer>
+
+</div>
+</body>
+</html>
