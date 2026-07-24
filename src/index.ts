@@ -53,7 +53,10 @@ const json = (data: unknown, status = 200, headers: Record<string, string> = {})
  * client-side; paid endpoints aren't meant to be called this way.
  */
 const CORS_ALLOWED_ORIGINS = new Set([
-  "https://liquiscope-landing.pages.dev",
+  // Real deployed origin: Cloudflare's unified Workers/Pages assigns a
+  // *.workers.dev subdomain (via `wrangler deploy` with an assets config),
+  // not the classic *.pages.dev domain this was originally planned around.
+  "https://liquiscope-landing.liquiscope.workers.dev",
   "http://localhost:8080",
   "http://127.0.0.1:8080",
   "http://localhost:5500",
