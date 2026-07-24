@@ -2,24 +2,40 @@
 
 Plain HTML/CSS/JS, no build step, no framework — `index.html`, `methodology.html`, `style.css`, `app.js`. Calls the live Worker's public endpoints (`/check`, `/stats`, `/health`) directly from the browser.
 
-## Hosting: Cloudflare Pages
+## Hosting: Cloudflare Pages (deployed as a static-assets Worker)
 
-Chosen over Vercel because it's the same account/ecosystem the Worker already lives in — no new third-party signup (the standing instruction was to ask before adding any new third-party service; Pages isn't one, it's the existing Cloudflare account). Free tier, no build step needed since this is static files.
+Chosen over Vercel because it's the same account/ecosystem the Worker already lives in — no new third-party signup. Free tier, no build step needed since this is static files.
 
-```bash
-# one-time, from the landing/ directory
-npx wrangler pages deploy . --project-name=liquiscope-landing
+**Live:** https://liquiscope-landing.liquiscope.workers.dev
+
+Deployment note learned the hard way: `wrangler pages deploy` on the current wrangler version "delegates to the latest version of Cloudflare Pages, now part of Cloudflare Workers" — it assigns a `*.workers.dev` subdomain, **not** the classic `*.pages.dev` domain this was originally planned around. It also resolves `wrangler.jsonc` by walking up the directory tree, so running the deploy command from inside `landing/` picked up the *repo-root* `wrangler.jsonc` (the real Worker's config — KV binding, cron triggers, `main: src/index.ts`) and deployed a full duplicate Worker instead of the static files. Fixed by deploying from an isolated directory containing only the 4 static files plus a minimal `wrangler.jsonc` naming the project explicitly:
+
+```jsonc
+{
+  "name": "liquiscope-landing",
+  "compatibility_date": "2026-07-24",
+  "assets": { "directory": "." }
+}
 ```
 
-This assigns `https://liquiscope-landing.pages.dev` — **not yet deployed**. The Worker's CORS allowlist (`src/index.ts`'s `CORS_ALLOWED_ORIGINS`) already includes this exact origin, chosen in advance so the first deploy works without a follow-up CORS change. If a custom domain is added later, that origin needs adding too.
+```bash
+# from a directory containing ONLY index.html, methodology.html, style.css, app.js
+# (and a .assetsignore with ".wrangler" + "wrangler.jsonc" in it — wrangler's own
+# tmp/cache files land inside the deploy directory during the run and get swept
+# into the asset upload otherwise; this leaked the Cloudflare account ID publicly
+# on the first attempt, caught and fixed same-session)
+npx wrangler deploy
+```
 
-**Not deployed yet** — per the standing instruction to see it before it goes live. Local preview:
+The Worker's CORS allowlist (`src/index.ts`'s `CORS_ALLOWED_ORIGINS`) is set to the real deployed origin above. If a custom domain is added later, that origin needs adding too.
+
+Local preview:
 
 ```bash
 cd landing && npx serve .   # or: python3 -m http.server 8080
 ```
 
-Note: local preview on `http://localhost:8080` or `http://127.0.0.1:5500` (Live Server default) is also pre-allowlisted for CORS, so you can test the real `/check`/`/stats`/`/health` calls against the live Worker before any deploy.
+Local preview on `http://localhost:8080` or `http://127.0.0.1:5500` (Live Server default) is also pre-allowlisted for CORS, so you can test real `/check`/`/stats`/`/health` calls against the live Worker locally.
 
 ## Demo clip slot (item 3)
 

@@ -1,9 +1,7 @@
 # LiquiScope
 
 DeFi liquidation-risk reports as an A2MCP Agent Service Provider on OKX.AI.
-**Live endpoint:** https://liquiscope.liquiscope.workers.dev · **Agent ID:** #5074 (X Layer, ERC-8004)
-
-> The `feat/engine-depth` branch (portfolio score, recommendations, stress scenarios, Watch Mode, GET /proof — documented below) is built and tested but **not yet merged/deployed**. The live endpoint above still serves the pre-engine-depth shape until that branch is merged.
+**Live endpoint:** https://liquiscope.liquiscope.workers.dev · **Landing page:** https://liquiscope-landing.liquiscope.workers.dev · **Agent ID:** #5074 (X Layer, ERC-8004) · **[Listing](https://www.okx.ai/agents/5074?source=search)**
 
 | Endpoint | Price | What you get |
 |---|---|---|
