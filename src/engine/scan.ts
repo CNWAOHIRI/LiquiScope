@@ -33,6 +33,14 @@ export const ADAPTERS: ProtocolAdapter[] = [AaveV3Adapter, CompoundV3Adapter];
  *
  * To promote: once a real position is found and its numbers hand-verified
  * against the source contracts, remove the entry here.
+ *
+ * Beta status re-evaluated as of 2026-07-24 (engine-depth build): still
+ * beta. No new fixture wallet found — the FL-012 eth_getLogs range ceiling
+ * that blocked discovery originally still applies (re-confirmed with fresh
+ * numbers this same session, see friction-log FL-014: as tight as 50 blocks
+ * on some free RPCs, not an archive-tier issue that would ease over time).
+ * This is a live, revisited decision, not a stale label — re-check again
+ * next time this file is touched.
  */
 const PROVISIONAL_SOURCES: { protocol: Protocol; chain: ChainKey }[] = [{ protocol: "compound-v3", chain: "ethereum" }];
 
