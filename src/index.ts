@@ -44,6 +44,32 @@ interface Env extends X402Env {
 const json = (data: unknown, status = 200, headers: Record<string, string> = {}) =>
   new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json", ...headers } });
 
+/**
+ * CORS for the landing page's browser-side calls (feat/landing-trust —
+ * separate deployable, calls this Worker's public endpoints directly from
+ * the browser). Allowlist, not `*`: /check is free and this keeps it from
+ * being trivially embeddable by unrelated third-party sites. Only applied
+ * to /check and /stats — the two endpoints the landing page actually calls
+ * client-side; paid endpoints aren't meant to be called this way.
+ */
+const CORS_ALLOWED_ORIGINS = new Set([
+  "https://liquiscope-landing.pages.dev",
+  "http://localhost:8080",
+  "http://127.0.0.1:8080",
+  "http://localhost:5500",
+  "http://127.0.0.1:5500",
+]);
+
+function corsHeaders(origin: string | null): Record<string, string> {
+  if (!origin || !CORS_ALLOWED_ORIGINS.has(origin)) return {};
+  return {
+    "Access-Control-Allow-Origin": origin,
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "content-type",
+    "Vary": "Origin",
+  };
+}
+
 function parseAddress(raw: unknown): Address | null {
   if (typeof raw !== "string") return null;
   const candidate = raw.trim();
@@ -459,19 +485,28 @@ export default {
 
   async fetch(request: Request, env: Env, ctx: Ctx): Promise<Response> {
     const url = new URL(request.url);
+    const cors = corsHeaders(request.headers.get("origin"));
     try {
-      if (url.pathname === "/health") return json({ status: "ok", service: "liquiscope" });
+      if (request.method === "OPTIONS" && (url.pathname === "/check" || url.pathname === "/stats" || url.pathname === "/health")) {
+        return new Response(null, { status: 204, headers: cors });
+      }
+
+      if (url.pathname === "/health") return json({ status: "ok", service: "liquiscope" }, 200, cors);
 
       if (url.pathname === "/stats") {
         if (request.method !== "GET") return json({ error: "use GET" }, 405);
-        return await handleStats(env);
+        const res = await handleStats(env);
+        Object.entries(cors).forEach(([k, v]) => res.headers.set(k, v));
+        return res;
       }
 
       if (url.pathname === "/check") {
         if (request.method !== "POST") return json({ error: "use POST" }, 405);
         const ip = request.headers.get("cf-connecting-ip") ?? "unknown";
-        if (rateLimited(ip)) return json({ error: "rate limit exceeded (30/min) — please slow down" }, 429);
-        return await handleCheck(request, env, ctx);
+        if (rateLimited(ip)) return json({ error: "rate limit exceeded (30/min) — please slow down" }, 429, cors);
+        const res = await handleCheck(request, env, ctx);
+        Object.entries(cors).forEach(([k, v]) => res.headers.set(k, v));
+        return res;
       }
 
       if (url.pathname === "/report") {
@@ -499,6 +534,7 @@ export default {
         {
           service: "LiquiScope",
           description: "Cross-protocol, cross-chain DeFi liquidation-risk reports (Aave v3 + Compound v3, across Ethereum/Base/Arbitrum/Optimism)",
+          dataAccess: "Read-only. We never touch your funds, keys, or approvals — LiquiScope only reads public chain data.",
           endpoints: {
             "POST /check": "free — single-chain quick health factor + risk tier { address, chain? }",
             "POST /report": "x402-paid — full cross-protocol, cross-chain analysis { address }, plus portfolio_score, recommendations, and an optional ?stress_pct=-20 hypothetical price-move scenario",

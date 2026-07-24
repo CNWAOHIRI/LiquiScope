@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>LiquiScope — free DeFi liquidation-risk check</title>
+<meta name="description" content="Paste a wallet address, see its DeFi liquidation risk across Aave v3 and Compound v3 — free, read-only, no signup." />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div class="wrap">
+
+  <header class="hero">
+    <h1>LiquiScope</h1>
+    <p class="tagline">Paste your wallet. See your liquidation risk. Free.</p>
+  </header>
+
+  <div class="badge-readonly">
+    <span class="dot" aria-hidden="true"></span>
+    <span><strong>Read-only.</strong> We never touch your funds, keys, or approvals — LiquiScope only reads public chain data.</span>
+  </div>
+
+  <section class="panel">
+    <form id="check-form" class="check-form">
+      <input
+        id="address-input"
+        type="text"
+        inputmode="latin"
+        autocomplete="off"
+        spellcheck="false"
+        placeholder="0x… wallet address"
+        aria-label="Wallet address"
+        required
+      />
+      <select id="chain-select" aria-label="Chain">
+        <option value="base">Base</option>
+        <option value="ethereum">Ethereum</option>
+        <option value="arbitrum">Arbitrum</option>
+        <option value="optimism">Optimism</option>
+      </select>
+      <button id="submit-btn" type="submit">Check risk</button>
+    </form>
+    <div id="result"></div>
+  </section>
+
+  <section class="widgets">
+    <div class="widget">
+      <h3>Agents calling LiquiScope</h3>
+      <div class="big" id="stats-big">—</div>
+      <div class="sub" id="stats-sub">loading…</div>
+    </div>
+    <div class="widget">
+      <h3>Service status</h3>
+      <div class="big"><span class="status-dot status-checking" id="status-dot"></span><span id="status-text" style="font-size:1rem; font-weight:600;">checking…</span></div>
+      <div class="sub">live check against GET /health, every 60s</div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h3 style="margin-top:0; font-size:0.95rem;">See it in action</h3>
+    <div class="demo-slot" id="demo-slot">
+      30-second demo clip goes here — see landing/README.md for the exact file to drop in.
+    </div>
+  </section>
+
+  <footer>
+    <a href="methodology.html">Methodology &amp; coverage</a>
+    &middot;
+    <a href="https://github.com/CNWAOHIRI/LiquiScope" target="_blank" rel="noopener">GitHub</a>
+  </footer>
+
+</div>
+<script src="app.js"></script>
+</body>
+</html>
