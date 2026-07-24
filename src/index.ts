@@ -18,6 +18,9 @@ import { ADAPTERS, aggregatePortfolio, coverageMatrix, scanWallet } from "./engi
 import { CHAINS } from "./engine/rpc";
 import type { ChainKey } from "./engine/types";
 import { toCompatPosition } from "./report/compat";
+import { computePortfolioScore } from "./report/portfolioScore";
+import { computeRecommendations } from "./report/recommendations";
+import { computeStressScenario, parseStressPct } from "./report/stress";
 import { generateSummary } from "./report/summary";
 import { RECOMMENDATIONS, worstTier } from "./report/template";
 import { challenge402, paymentResponseHeader, processPayment, type X402Env } from "./x402";
@@ -117,7 +120,8 @@ async function handleCheck(request: Request): Promise<Response> {
  * matrix so the caller can see exactly what was (and wasn't) checked.
  */
 async function handleReport(request: Request, env: Env): Promise<Response> {
-  const resourceUrl = new URL(request.url).origin + "/report";
+  const url = new URL(request.url);
+  const resourceUrl = url.origin + "/report";
   const payment = await processPayment(request, resourceUrl, env);
   if (payment === null) return challenge402(resourceUrl);
   if (!payment.ok) return json({ error: payment.error }, payment.status);
@@ -130,6 +134,11 @@ async function handleReport(request: Request, env: Env): Promise<Response> {
     return json({ error: "missing or invalid 'address' — expected a 0x… EVM address (40 hex chars)" }, 400, {
       "PAYMENT-RESPONSE": paymentResponseHeader(payment.settlement),
     });
+  }
+
+  const stressParam = parseStressPct(url.searchParams.get("stress_pct"));
+  if ("error" in stressParam) {
+    return json({ error: stressParam.error }, 400, { "PAYMENT-RESPONSE": paymentResponseHeader(payment.settlement) });
   }
 
   const scans = await scanWallet(address);
@@ -150,6 +159,10 @@ async function handleReport(request: Request, env: Env): Promise<Response> {
   // report/compat.ts for the full additive-only contract this endpoint honors.
   const protocolsSummary = ADAPTERS.map((a) => `${a.protocol} (${a.supportedChains.join(", ")})`);
 
+  const portfolioScore = computePortfolioScore(positions);
+  const recommendations = computeRecommendations(positions);
+  const stressScenario = stressParam.value !== 0 ? computeStressScenario(positions, stressParam.value) : undefined;
+
   return json(
     {
       service: "liquiscope-report",
@@ -166,6 +179,9 @@ async function handleReport(request: Request, env: Env): Promise<Response> {
         positionCount: portfolio.positionCount,
         riskiestPosition: portfolio.riskiestPosition ? toCompatPosition(portfolio.riskiestPosition) : null,
       },
+      portfolio_score: portfolioScore, // new, additive
+      recommendations, // new, additive — one entry per position below the comfortable HF band, empty array if none
+      stress_scenario: stressScenario, // new, additive — present only when ?stress_pct= was supplied
       summary,
       summarySource: source,
       positions: positions.map(toCompatPosition),
@@ -220,7 +236,7 @@ export default {
           description: "Cross-protocol, cross-chain DeFi liquidation-risk reports (Aave v3 + Compound v3, across Ethereum/Base/Arbitrum/Optimism)",
           endpoints: {
             "POST /check": "free — single-chain quick health factor + risk tier { address, chain? }",
-            "POST /report": "x402-paid — full cross-protocol, cross-chain analysis { address }",
+            "POST /report": "x402-paid — full cross-protocol, cross-chain analysis { address }, plus portfolio_score, recommendations, and an optional ?stress_pct=-20 hypothetical price-move scenario",
           },
         },
         404,

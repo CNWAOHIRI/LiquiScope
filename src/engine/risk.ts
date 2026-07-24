@@ -60,6 +60,7 @@ export function dominantLiquidationPrice(
     currentPriceUsd: dominant.priceUsd,
     liquidationPriceUsd: round(clamped, 6),
     dropToLiquidationPct: round(1 - clamped / dominant.priceUsd, 4),
+    liquidationThreshold: dominant.liquidationThreshold,
   };
 }
 

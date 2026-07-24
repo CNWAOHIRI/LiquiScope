@@ -35,7 +35,7 @@ export interface CompatPosition {
   collateral: NormalizedPosition["collateralAssets"];
   debt: NormalizedPosition["debtAssets"];
   /** Omitted entirely (not present as a key) when there's no dominant leg — matches the pre-existing optional-field behavior exactly. */
-  dominantCollateral?: LegacyDominantCollateral & { dropToLiquidationPct: number };
+  dominantCollateral?: LegacyDominantCollateral & { dropToLiquidationPct: number; liquidationThreshold: number };
 
   // --- new fields, additive only (never existed before, so no collision) ---
   collateralUsd: number;
@@ -75,6 +75,7 @@ export function toCompatPosition(p: NormalizedPosition): CompatPosition {
       liquidationPriceUsd: p.dominantCollateral.liquidationPriceUsd,
       dropToLiquidation: p.dominantCollateral.dropToLiquidationPct, // old name
       dropToLiquidationPct: p.dominantCollateral.dropToLiquidationPct, // new name, additive
+      liquidationThreshold: p.dominantCollateral.liquidationThreshold, // new, additive — powers recommendations.ts math
     };
   }
   if (p.provisional) compat.provisional = true;

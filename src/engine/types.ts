@@ -30,6 +30,14 @@ export interface DominantCollateral {
   liquidationPriceUsd: number;
   /** Fraction (0..1) of current price the asset must fall to trigger liquidation. */
   dropToLiquidationPct: number;
+  /**
+   * Fraction (0..1) of this asset's USD value counted toward the health
+   * factor (Aave: liquidationThreshold; Compound: liquidateCollateralFactor).
+   * Exposed so downstream consumers (recommendations.ts) can solve the HF
+   * formula backwards for "how much collateral to add" using the exact same
+   * number the forward computation used — never re-derived or guessed.
+   */
+  liquidationThreshold: number;
 }
 
 /**
