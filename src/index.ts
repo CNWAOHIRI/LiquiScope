@@ -23,11 +23,14 @@ import { computeRecommendations } from "./report/recommendations";
 import { computeStressScenario, parseStressPct } from "./report/stress";
 import { generateSummary } from "./report/summary";
 import { RECOMMENDATIONS, worstTier } from "./report/template";
-import { challenge402, paymentResponseHeader, processPayment, type X402Env } from "./x402";
+import { challenge402, paymentResponseHeader, processPayment, PRICE_ATOMIC, type X402Env } from "./x402";
 import { runWatchCron } from "./watch/cron";
 import { computeWatchPriceAtomic, MAX_DURATION_DAYS, MIN_DURATION_DAYS, watchDescription } from "./watch/pricing";
 import { createSubscription, findSubscription } from "./watch/storage";
 import { toStatus, type WatchSubscription } from "./watch/types";
+import { probeLookback } from "./proof/lookback";
+import { replayTrajectory } from "./proof/replay";
+import { PROOF_SOURCES } from "./proof/readers";
 
 interface Env extends X402Env {
   ANTHROPIC_API_KEY?: string;
@@ -300,6 +303,95 @@ async function handleWatchStatus(id: string, env: Env): Promise<Response> {
   return json({ service: "liquiscope-watch-status", ...toStatus(sub) });
 }
 
+const PROOF_DESCRIPTION = "LiquiScope /proof — historical health-factor replay (\"would-have-warned-you\" mode)";
+
+/**
+ * GET /proof?wallet=&chain=&protocol= — x402-paid, same $0.15 price as
+ * /report (a default, not independently approved — flagged for confirmation
+ * before any deploy). protocol is required (not optional): scoping to one
+ * source keeps the subrequest cost per call predictable, which matters
+ * because this handler runs entirely within the free Workers plan's
+ * 50-subrequest/invocation ceiling.
+ *
+ * Budget note (measured, not assumed — see commit message): historical,
+ * block-pinned reads do NOT multicall-batch the way live same-block reads
+ * do, so the full ProtocolAdapter.getPositions() path measured ~9-12
+ * subrequests PER SAMPLE — with ~6 probe reads + 10 trajectory samples that
+ * would total 150+, well over budget. proof/readers.ts's lean HF-only
+ * readers (getHealthFactorAt on each adapter) cut this to ~1 subrequest/
+ * sample for Aave (its on-chain healthFactor is already a single read) and
+ * a handful for Compound (no aggregate to short-circuit to, but the
+ * display-only symbol() lookups are dropped) — same exact formula, just
+ * without the per-asset display data a trajectory point doesn't need.
+ */
+async function handleProof(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const resourceUrl = url.origin + "/proof";
+  const payment = await processPayment(request, resourceUrl, env, PRICE_ATOMIC, PROOF_DESCRIPTION);
+  if (payment === null) return challenge402(resourceUrl, PRICE_ATOMIC, PROOF_DESCRIPTION);
+  if (!payment.ok) return json({ error: payment.error }, payment.status);
+  const paymentHeaders = { "PAYMENT-RESPONSE": paymentResponseHeader(payment.settlement) };
+
+  const address = parseAddress(url.searchParams.get("wallet"));
+  if (!address) {
+    return json({ error: "missing or invalid 'wallet' — expected a 0x… EVM address (40 hex chars)" }, 400, paymentHeaders);
+  }
+  const chainRaw = String(url.searchParams.get("chain") ?? "").toLowerCase();
+  const chain = (CHAINS as string[]).includes(chainRaw) ? (chainRaw as ChainKey) : null;
+  if (!chain) {
+    return json({ error: `missing or unsupported 'chain' — use one of: ${CHAINS.join(", ")}` }, 400, paymentHeaders);
+  }
+  const protocolRaw = String(url.searchParams.get("protocol") ?? "");
+  const source = PROOF_SOURCES.find((s) => s.protocol === protocolRaw && s.supportedChains.includes(chain));
+  if (!source) {
+    const supported = PROOF_SOURCES.filter((s) => s.supportedChains.includes(chain)).map((s) => s.protocol);
+    return json({ error: `missing or unsupported 'protocol' for ${chain} — use one of: ${supported.join(", ")}` }, 400, paymentHeaders);
+  }
+
+  let lookback;
+  try {
+    lookback = await probeLookback(source.read, chain, address);
+  } catch (e) {
+    return json({ error: "could not establish a historical lookback window, retry shortly", detail: e instanceof Error ? e.message : String(e) }, 503, paymentHeaders);
+  }
+
+  const { trajectory, incidents, failedSamples } = await replayTrajectory(source.read, chain, address, lookback);
+
+  const summary =
+    incidents.length === 0
+      ? `No historical liquidation-eligible crossings (health factor below 1.0) found in the achieved ${lookback.achievedDays}-day lookback window.`
+      : `Found ${incidents.length} historical liquidation-eligible crossing${incidents.length === 1 ? "" : "s"} in the achieved ${lookback.achievedDays}-day lookback window.`;
+
+  return json(
+    {
+      service: "liquiscope-proof",
+      address,
+      chain,
+      protocol: source.protocol,
+      lookback: {
+        requested_days: lookback.requestedDays,
+        achieved_days: lookback.achievedDays,
+        achieved_from_block: lookback.achievedBlock.toString(),
+        achieved_from_timestamp: lookback.achievedTimestamp,
+        to_block: lookback.toBlock.toString(),
+        to_timestamp: lookback.toTimestamp,
+        note:
+          lookback.achievedDays < lookback.requestedDays
+            ? `Free-tier RPC archive depth only reached ${lookback.achievedDays} of the requested ${lookback.requestedDays} days for this wallet/chain at request time — this is what was actually queryable, not a fixed promise.`
+            : "Full requested lookback window was achievable.",
+      },
+      price_source: "on-chain oracle prices read at each sampled historical block — the same oracle/read path as a live /report, just pinned to a past block, never a separate historical price model",
+      sampling_note: `${trajectory.length} discrete samples across the lookback window (not a continuous trace) — a brief health-factor dip between two samples can be missed by construction.${failedSamples > 0 ? ` ${failedSamples} in-range sample(s) failed to read (transient RPC issue) and are marked readable:false rather than silently omitted.` : ""}`,
+      trajectory,
+      incidents,
+      summary,
+      timestamp: new Date().toISOString(),
+    },
+    200,
+    paymentHeaders,
+  );
+}
+
 export default {
   /** Cron dispatch: the fixture self-check (10-min pattern) and the Watch Mode alert sweep (15-min pattern) share one Worker, split by event.cron. */
   async scheduled(event: { cron: string }, env: Env, ctx: { waitUntil(p: Promise<unknown>): void }): Promise<void> {
@@ -361,6 +453,11 @@ export default {
         return await handleWatchStatus(watchStatusMatch[1], env);
       }
 
+      if (url.pathname === "/proof") {
+        if (request.method !== "GET") return json({ error: "use GET" }, 405);
+        return await handleProof(request, env);
+      }
+
       return json(
         {
           service: "LiquiScope",
@@ -370,6 +467,7 @@ export default {
             "POST /report": "x402-paid — full cross-protocol, cross-chain analysis { address }, plus portfolio_score, recommendations, and an optional ?stress_pct=-20 hypothetical price-move scenario",
             "POST /watch": "x402-paid ($0.02/day, 3-day min) — recurring health-factor alert { wallet, chain, protocol, hf_threshold, notify_webhook, duration_days }, delivered via webhook when hf_threshold is crossed",
             "GET /watch/:id/status": "free — subscription status, last check, alert state",
+            "GET /proof": "x402-paid ($0.15) — historical health-factor replay ?wallet=&chain=&protocol=, over the best achievable free-tier RPC lookback; flags any past liquidation-eligible crossings",
           },
         },
         404,

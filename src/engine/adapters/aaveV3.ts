@@ -24,7 +24,7 @@
  */
 
 import { parseAbi, type Address, type PublicClient } from "viem";
-import { getClient } from "../rpc";
+import { getClient, getHistoricalClient } from "../rpc";
 import { DUST_USD, dominantLiquidationPrice, round, tierFor, type CollateralLeg } from "../risk";
 import type { ChainKey, NormalizedPosition } from "../types";
 import type { ProtocolAdapter } from "./types";
@@ -83,7 +83,7 @@ export async function resolveContracts(chain: ChainKey, client: PublicClient): P
 
 const BASE_UNIT = 1e8; // USD, 8 decimals
 
-async function readOne(chain: ChainKey, user: Address): Promise<NormalizedPosition | null> {
+async function readOne(chain: ChainKey, user: Address, blockNumber?: bigint): Promise<NormalizedPosition | null> {
   const client = getClient(chain);
   const { pool, oracle, dataProvider } = await resolveContracts(chain, client);
 
@@ -92,6 +92,7 @@ async function readOne(chain: ChainKey, user: Address): Promise<NormalizedPositi
     abi: poolAbi,
     functionName: "getUserAccountData",
     args: [user],
+    blockNumber,
   });
 
   const totalCollateralUsd = Number(totalCollateralBase) / BASE_UNIT;
@@ -104,6 +105,7 @@ async function readOne(chain: ChainKey, user: Address): Promise<NormalizedPositi
     address: dataProvider,
     abi: dataProviderAbi,
     functionName: "getAllReservesTokens",
+    blockNumber,
   });
 
   // One multicall round: user data for every reserve on the market.
@@ -114,6 +116,7 @@ async function readOne(chain: ChainKey, user: Address): Promise<NormalizedPositi
         abi: dataProviderAbi,
         functionName: "getUserReserveData",
         args: [r.tokenAddress, user],
+        blockNumber,
       }),
     ),
   );
@@ -133,6 +136,7 @@ async function readOne(chain: ChainKey, user: Address): Promise<NormalizedPositi
           abi: dataProviderAbi,
           functionName: "getReserveConfigurationData",
           args: [r.tokenAddress],
+          blockNumber,
         }),
       ),
     ),
@@ -141,6 +145,7 @@ async function readOne(chain: ChainKey, user: Address): Promise<NormalizedPositi
       abi: oracleAbi,
       functionName: "getAssetsPrices",
       args: [involved.map((r) => r.tokenAddress)],
+      blockNumber,
     }),
   ]);
 
@@ -149,6 +154,7 @@ async function readOne(chain: ChainKey, user: Address): Promise<NormalizedPositi
     abi: poolAbi,
     functionName: "getUserEMode",
     args: [user],
+    blockNumber,
   });
   const avgLt = Number(avgLtBps) / 10_000;
 
@@ -200,8 +206,38 @@ async function readOne(chain: ChainKey, user: Address): Promise<NormalizedPositi
 export const AaveV3Adapter: ProtocolAdapter = {
   protocol: "aave-v3",
   supportedChains: ["ethereum", "base", "arbitrum", "optimism"],
-  async getPositions(chain, wallet) {
-    const p = await readOne(chain, wallet);
+  async getPositions(chain, wallet, blockNumber) {
+    const p = await readOne(chain, wallet, blockNumber);
     return p ? [p] : [];
   },
 };
+
+/**
+ * Lean HF-only read for GET /proof's historical replay: the on-chain
+ * `healthFactor` field IS the authoritative aggregate — no re-derivation,
+ * same exact number readOne() would report — but skipping every
+ * per-reserve/display read (getAllReservesTokens, getUserReserveData,
+ * getReserveConfigurationData, getAssetsPrices, getUserEMode) that
+ * readOne() needs for the full position breakdown but a pure HF trajectory
+ * point doesn't. Measured necessity, not premature optimization: those
+ * extra reads don't multicall-batch across DIFFERENT historical block
+ * numbers the way same-block live reads do, so the full readOne() path
+ * costs ~10x more subrequests per historical sample than this one does —
+ * see the commit message for the real measured numbers.
+ */
+export async function getHealthFactorAt(chain: ChainKey, user: Address, blockNumber?: bigint): Promise<{ market: string; healthFactor: number }[]> {
+  const client = getHistoricalClient(chain);
+  const { pool } = await resolveContracts(chain, client);
+  const [totalCollateralBase, totalDebtBase, , , , healthFactorRay] = await client.readContract({
+    address: pool,
+    abi: poolAbi,
+    functionName: "getUserAccountData",
+    args: [user],
+    blockNumber,
+  });
+  const totalCollateralUsd = Number(totalCollateralBase) / BASE_UNIT;
+  const totalDebtUsd = Number(totalDebtBase) / BASE_UNIT;
+  if (totalCollateralUsd < DUST_USD && totalDebtUsd < DUST_USD) return [];
+  const healthFactor = totalDebtBase === 0n ? Infinity : round(Number(healthFactorRay) / 1e18, 4);
+  return [{ market: "core", healthFactor }];
+}

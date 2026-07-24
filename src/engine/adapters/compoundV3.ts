@@ -24,7 +24,7 @@
 
 import { parseAbi, type Address, type PublicClient } from "viem";
 import { getEthUsdPrice } from "../ethPrice";
-import { getClient } from "../rpc";
+import { getClient, getHistoricalClient } from "../rpc";
 import { DUST_USD, dominantLiquidationPrice, round, tierFor, type CollateralLeg } from "../risk";
 import type { ChainKey, NormalizedPosition } from "../types";
 import type { ProtocolAdapter } from "./types";
@@ -76,43 +76,44 @@ async function readMarket(
   chain: ChainKey,
   market: CometMarket,
   user: Address,
+  blockNumber?: bigint,
 ): Promise<NormalizedPosition | null> {
   const comet = market.address;
   const [borrowRaw, baseSupplyRaw, numAssets] = await Promise.all([
-    client.readContract({ address: comet, abi: cometAbi, functionName: "borrowBalanceOf", args: [user] }),
-    client.readContract({ address: comet, abi: cometAbi, functionName: "balanceOf", args: [user] }),
-    client.readContract({ address: comet, abi: cometAbi, functionName: "numAssets" }),
+    client.readContract({ address: comet, abi: cometAbi, functionName: "borrowBalanceOf", args: [user], blockNumber }),
+    client.readContract({ address: comet, abi: cometAbi, functionName: "balanceOf", args: [user], blockNumber }),
+    client.readContract({ address: comet, abi: cometAbi, functionName: "numAssets", blockNumber }),
   ]);
 
   const assetInfos = await Promise.all(
     Array.from({ length: numAssets }, (_, i) =>
-      client.readContract({ address: comet, abi: cometAbi, functionName: "getAssetInfo", args: [i] }),
+      client.readContract({ address: comet, abi: cometAbi, functionName: "getAssetInfo", args: [i], blockNumber }),
     ),
   );
   const collateralBalances = await Promise.all(
     assetInfos.map((info) =>
-      client.readContract({ address: comet, abi: cometAbi, functionName: "userCollateral", args: [user, info.asset] }),
+      client.readContract({ address: comet, abi: cometAbi, functionName: "userCollateral", args: [user, info.asset], blockNumber }),
     ),
   );
 
   const involved = assetInfos.filter((_, i) => collateralBalances[i][0] > 0n);
   if (borrowRaw === 0n && baseSupplyRaw === 0n && involved.length === 0) return null;
 
-  const toUsd = market.ethDenominated ? await getEthUsdPrice(chain) : 1;
+  const toUsd = market.ethDenominated ? await getEthUsdPrice(chain, blockNumber) : 1;
 
   const [baseScale, basePriceFeed] = await Promise.all([
-    client.readContract({ address: comet, abi: cometAbi, functionName: "baseScale" }),
-    client.readContract({ address: comet, abi: cometAbi, functionName: "baseTokenPriceFeed" }),
+    client.readContract({ address: comet, abi: cometAbi, functionName: "baseScale", blockNumber }),
+    client.readContract({ address: comet, abi: cometAbi, functionName: "baseTokenPriceFeed", blockNumber }),
   ]);
   const [basePriceRaw, ...collateralPrices] = await Promise.all([
-    client.readContract({ address: comet, abi: cometAbi, functionName: "getPrice", args: [basePriceFeed] }),
+    client.readContract({ address: comet, abi: cometAbi, functionName: "getPrice", args: [basePriceFeed], blockNumber }),
     ...involved.map((info) =>
-      client.readContract({ address: comet, abi: cometAbi, functionName: "getPrice", args: [info.priceFeed] }),
+      client.readContract({ address: comet, abi: cometAbi, functionName: "getPrice", args: [info.priceFeed], blockNumber }),
     ),
   ]);
   const symbols = await Promise.all(
     involved.map((info) =>
-      client.readContract({ address: info.asset, abi: erc20Abi, functionName: "symbol" }).catch(() => "?"),
+      client.readContract({ address: info.asset, abi: erc20Abi, functionName: "symbol", blockNumber }).catch(() => "?"),
     ),
   );
 
@@ -171,11 +172,75 @@ async function readMarket(
 export const CompoundV3Adapter: ProtocolAdapter = {
   protocol: "compound-v3",
   supportedChains: ["ethereum", "base", "arbitrum"],
-  async getPositions(chain, wallet) {
+  async getPositions(chain, wallet, blockNumber) {
     const markets = MARKETS[chain];
     if (!markets) return [];
     const client = getClient(chain);
-    const results = await Promise.all(markets.map((m) => readMarket(client, chain, m, wallet)));
+    const results = await Promise.all(markets.map((m) => readMarket(client, chain, m, wallet, blockNumber)));
     return results.filter((r): r is NormalizedPosition => r !== null);
   },
 };
+
+/**
+ * Lean HF-only read for GET /proof, mirroring aaveV3.ts's getHealthFactorAt:
+ * same exact weighted-collateral/debt formula as readMarket(), just without
+ * the ERC20 symbol() lookups readMarket() needs for display (collateralAssets
+ * symbols) but a pure HF trajectory point doesn't. Comet still requires every
+ * other read (getAssetInfo/userCollateral/getPrice per asset) since those
+ * feed the formula itself, not just display — the saving here is smaller
+ * than Aave's (no single on-chain aggregate to short-circuit to), but every
+ * dropped subrequest matters against the 50/invocation budget.
+ */
+async function marketHealthFactorAt(client: PublicClient, chain: ChainKey, market: CometMarket, user: Address, blockNumber?: bigint): Promise<{ market: string; healthFactor: number } | null> {
+  const comet = market.address;
+  const [borrowRaw, numAssets] = await Promise.all([
+    client.readContract({ address: comet, abi: cometAbi, functionName: "borrowBalanceOf", args: [user], blockNumber }),
+    client.readContract({ address: comet, abi: cometAbi, functionName: "numAssets", blockNumber }),
+  ]);
+
+  const assetInfos = await Promise.all(
+    Array.from({ length: numAssets }, (_, i) =>
+      client.readContract({ address: comet, abi: cometAbi, functionName: "getAssetInfo", args: [i], blockNumber }),
+    ),
+  );
+  const collateralBalances = await Promise.all(
+    assetInfos.map((info) =>
+      client.readContract({ address: comet, abi: cometAbi, functionName: "userCollateral", args: [user, info.asset], blockNumber }),
+    ),
+  );
+  const involved = assetInfos
+    .map((info, i) => ({ info, balance: collateralBalances[i][0] }))
+    .filter((x) => x.balance > 0n);
+
+  if (borrowRaw === 0n && involved.length === 0) return null;
+
+  const toUsd = market.ethDenominated ? await getEthUsdPrice(chain, blockNumber) : 1;
+  const [baseScale, basePriceFeed] = await Promise.all([
+    client.readContract({ address: comet, abi: cometAbi, functionName: "baseScale", blockNumber }),
+    client.readContract({ address: comet, abi: cometAbi, functionName: "baseTokenPriceFeed", blockNumber }),
+  ]);
+  const [basePriceRaw, ...collateralPrices] = await Promise.all([
+    client.readContract({ address: comet, abi: cometAbi, functionName: "getPrice", args: [basePriceFeed], blockNumber }),
+    ...involved.map((x) => client.readContract({ address: comet, abi: cometAbi, functionName: "getPrice", args: [x.info.priceFeed], blockNumber })),
+  ]);
+
+  const basePriceUsd = (Number(basePriceRaw) / PRICE_UNIT) * toUsd;
+  const debtUsd = round((Number(borrowRaw) / Number(baseScale)) * basePriceUsd, 2);
+  const weighted = involved.reduce((sum, x, i) => {
+    const priceUsd = (Number(collateralPrices[i]) / PRICE_UNIT) * toUsd;
+    const usdValue = (Number(x.balance) / Number(x.info.scale)) * priceUsd;
+    return sum + usdValue * (Number(x.info.liquidateCollateralFactor) / 1e18);
+  }, 0);
+
+  if (weighted < DUST_USD && debtUsd < DUST_USD) return null;
+  const healthFactor = debtUsd <= 0 ? Infinity : round(weighted / debtUsd, 4);
+  return { market: market.label, healthFactor };
+}
+
+export async function getHealthFactorAt(chain: ChainKey, user: Address, blockNumber?: bigint): Promise<{ market: string; healthFactor: number }[]> {
+  const markets = MARKETS[chain];
+  if (!markets) return [];
+  const client = getHistoricalClient(chain);
+  const results = await Promise.all(markets.map((m) => marketHealthFactorAt(client, chain, m, user, blockNumber)));
+  return results.filter((r): r is { market: string; healthFactor: number } => r !== null);
+}
