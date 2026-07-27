@@ -37,18 +37,21 @@ cd landing && npx serve .   # or: python3 -m http.server 8080
 
 Local preview on `http://localhost:8080` or `http://127.0.0.1:5500` (Live Server default) is also pre-allowlisted for CORS, so you can test real `/check`/`/stats`/`/health` calls against the live Worker locally.
 
-## Demo clip slot (item 3)
+## Demo clip (item 3)
 
-`index.html` has a placeholder `<div class="demo-slot" id="demo-slot">` (see `style.css`'s `.demo-slot`, a 16:9 dashed box). To drop in the real clip once recorded:
+No placeholder on the live page right now — a "coming soon" box (and later, briefly, an empty `<video>` element with no source) both shipped and then got pulled per feedback; better to have no section than an obviously-unfinished one. To add the real clip once recorded:
 
-1. Add the video file to `landing/` (e.g. `demo.mp4`).
-2. Replace the placeholder div in `index.html` with:
+1. Add the video file to `landing/` (e.g. `demo.mp4`, optionally a poster frame `demo-poster.jpg`).
+2. Add a section back into `index.html`, right after the widgets `<section>` and before `<footer>`:
    ```html
-   <video class="demo-slot" controls poster="demo-poster.jpg">
-     <source src="demo.mp4" type="video/mp4" />
-   </video>
+   <section class="panel">
+     <h3 style="margin-top:0; font-size:0.95rem;">See it in action</h3>
+     <video style="width:100%; aspect-ratio:16/9; border-radius:var(--radius);" controls poster="demo-poster.jpg">
+       <source src="demo.mp4" type="video/mp4" />
+     </video>
+   </section>
    ```
-   (Drop `.demo-slot`'s dashed-border/placeholder styling in `style.css` once real content replaces it — cosmetic only.)
+3. Redeploy (see the deploy instructions above).
 
 ## OKX listing badge (item 4) — draft text, for you to paste in
 

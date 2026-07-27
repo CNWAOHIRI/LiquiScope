@@ -236,15 +236,6 @@ header.hero p.tagline {
 .status-offline { background: var(--critical); }
 .status-checking { background: var(--text-dim); }
 
-.demo-slot {
-  width: 100%;
-  aspect-ratio: 16 / 9;
-  background: var(--bg);
-  border: 1px solid var(--panel-border);
-  border-radius: var(--radius);
-  display: block;
-}
-
 footer {
   text-align: center;
   margin-top: 32px;
