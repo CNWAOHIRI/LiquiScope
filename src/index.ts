@@ -33,12 +33,16 @@ import { replayTrajectory } from "./proof/replay";
 import { PROOF_SOURCES } from "./proof/readers";
 import { callerIdFromPayer, callerIdFromRequest, classify } from "./stats/callerId";
 import { readStats, recordCall } from "./stats/store";
+import { sendMessage, type TelegramUpdate } from "./telegram/bot";
+import { getChatIdForToken, getOrCreateTokenForChat } from "./telegram/store";
 
 type Ctx = { waitUntil(p: Promise<unknown>): void };
 
 interface Env extends X402Env {
   ANTHROPIC_API_KEY?: string;
   WATCH_KV: KVNamespace;
+  TELEGRAM_BOT_TOKEN?: string;
+  TELEGRAM_WEBHOOK_SECRET?: string;
 }
 
 const json = (data: unknown, status = 200, headers: Record<string, string> = {}) =>
@@ -338,6 +342,9 @@ async function handleWatchCreate(request: Request, env: Env, ctx: Ctx): Promise<
       ...toStatus(sub),
       shard,
       check_interval_note: "Checked on a rotating cron schedule; latency scales gracefully with total subscriber count — see GET /watch/:id/status for last_checked_at.",
+      telegram_setup: notifyWebhook.includes("/telegram/relay/")
+        ? undefined
+        : "Don't want to run your own webhook receiver? Message the LiquiScope Telegram bot, it'll give you a notify_webhook URL that delivers alerts straight to your chat — use it on your next subscription.",
     },
     201,
     paymentHeaders,
@@ -362,6 +369,70 @@ async function handleWatchStatus(id: string, env: Env): Promise<Response> {
 async function handleStats(env: Env): Promise<Response> {
   const counts = await readStats(env.WATCH_KV);
   return json({ service: "liquiscope-stats", ...counts });
+}
+
+/** `notify_webhook`'s public shape when it's already a Telegram relay — used both to build a relay URL and to recognize one, so /watch doesn't re-suggest Telegram to someone who already set it up. */
+function telegramRelayUrl(origin: string, token: string): string {
+  return `${origin}/telegram/relay/${token}`;
+}
+
+/**
+ * POST /telegram/webhook — Telegram's own delivery target, not something a
+ * caller invokes directly. Verified via the secret token Telegram echoes
+ * back on every request (pinned during setWebhook) so this can't be spoofed
+ * into registering an arbitrary chat_id for someone else's token.
+ */
+async function handleTelegramWebhook(request: Request, env: Env): Promise<Response> {
+  if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_WEBHOOK_SECRET) return json({ error: "telegram not configured" }, 503);
+  if (request.headers.get("X-Telegram-Bot-Api-Secret-Token") !== env.TELEGRAM_WEBHOOK_SECRET) {
+    return json({ error: "unauthorized" }, 401);
+  }
+
+  const update = (await request.json().catch(() => null)) as TelegramUpdate | null;
+  const chat = update?.message?.chat;
+  if (!chat) return json({ ok: true }); // not a message we care about (edited_message, etc.) — 200 so Telegram doesn't retry
+
+  const chatId = String(chat.id);
+  const url = new URL(request.url);
+  const token = await getOrCreateTokenForChat(env.WATCH_KV, chatId);
+  const relayUrl = telegramRelayUrl(url.origin, token);
+
+  await sendMessage(
+    env.TELEGRAM_BOT_TOKEN,
+    chatId,
+    `👋 This is your LiquiScope alert relay.\n\nUse this as <b>notify_webhook</b> when registering <code>POST /watch</code>, and threshold-crossing alerts will arrive here instead of needing your own server:\n\n<code>${relayUrl}</code>`,
+  );
+
+  return json({ ok: true });
+}
+
+/**
+ * POST /telegram/relay/:token — this IS what gets registered as a /watch
+ * subscription's notify_webhook. Receives the same WebhookPayload shape
+ * cron.ts sends to any other webhook target (watch/webhook.ts), looks up
+ * the chat, and forwards a readable message. A non-2xx here is read by
+ * cron.ts exactly like any other failed delivery — the crossing retries
+ * next tick, same dedup/idempotency guarantees as a raw webhook URL.
+ */
+async function handleTelegramRelay(token: string, request: Request, env: Env): Promise<Response> {
+  if (!env.TELEGRAM_BOT_TOKEN) return json({ error: "telegram not configured" }, 503);
+
+  const chatId = await getChatIdForToken(env.WATCH_KV, token);
+  if (!chatId) return json({ error: "unknown relay token" }, 404);
+
+  const payload = (await request.json().catch(() => null)) as {
+    wallet?: string; chain?: string; protocol?: string; hf_threshold?: number; health_factor?: number;
+  } | null;
+  if (!payload) return json({ error: "malformed payload" }, 400);
+
+  const text =
+    `🚨 <b>LiquiScope alert</b>\n\n` +
+    `Wallet <code>${payload.wallet}</code> on ${payload.chain}/${payload.protocol} crossed your threshold.\n\n` +
+    `Health factor: <b>${payload.health_factor}</b> (threshold: ${payload.hf_threshold})`;
+
+  const result = await sendMessage(env.TELEGRAM_BOT_TOKEN, chatId, text);
+  if (!result.ok) return json({ error: result.error }, 502);
+  return json({ ok: true });
 }
 
 const PROOF_DESCRIPTION = "LiquiScope /proof — historical health-factor replay (\"would-have-warned-you\" mode)";
@@ -531,6 +602,17 @@ export default {
       if (url.pathname === "/proof") {
         if (request.method !== "GET") return json({ error: "use GET" }, 405);
         return await handleProof(request, env);
+      }
+
+      if (url.pathname === "/telegram/webhook") {
+        if (request.method !== "POST") return json({ error: "use POST" }, 405);
+        return await handleTelegramWebhook(request, env);
+      }
+
+      const telegramRelayMatch = url.pathname.match(/^\/telegram\/relay\/([^/]+)$/);
+      if (telegramRelayMatch) {
+        if (request.method !== "POST") return json({ error: "use POST" }, 405);
+        return await handleTelegramRelay(telegramRelayMatch[1], request, env);
       }
 
       return json(
