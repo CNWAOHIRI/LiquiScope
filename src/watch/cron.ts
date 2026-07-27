@@ -17,6 +17,16 @@ import { deliverWebhook, type WebhookPayload } from "./webhook";
 /** Per-check wall-clock budget — same rationale as scan.ts's SOURCE_TIMEOUT_MS: one hung RPC must not stall the whole tick. */
 const CHECK_TIMEOUT_MS = 12_000;
 
+/** Host + path only, no query/token — for logging a failed delivery target without leaking the full webhook URL (which may embed an opaque relay token) into logs. */
+function safeHost(url: string): string {
+  try {
+    const u = new URL(url);
+    return u.host + u.pathname;
+  } catch {
+    return "(invalid url)";
+  }
+}
+
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`check timed out after ${ms}ms`)), ms);
@@ -90,7 +100,11 @@ async function checkOne(sub: WatchSubscription, now: Date): Promise<CheckResult>
     }
     // Delivery failed: leave alert_state "ok" so the SAME crossing (same
     // dedup_key on the next attempt, since check_seq isn't bumped) retries
-    // at the next tick rather than being silently dropped.
+    // at the next tick rather than being silently dropped. Logged per-
+    // subscription (host only, not the full URL/token) since the aggregate
+    // webhookFailures count in the tick summary isn't enough to tell which
+    // target actually failed or why.
+    console.log(JSON.stringify({ webhookDeliveryFailed: sub.id, host: safeHost(sub.notify_webhook), error: result.error }));
     return { kind: "checked", updated, fired: false, recovered: false, webhookFailed: true };
   }
 
