@@ -35,6 +35,7 @@ import { callerIdFromPayer, callerIdFromRequest, classify } from "./stats/caller
 import { readStats, recordCall } from "./stats/store";
 import { sendMessage, type TelegramUpdate } from "./telegram/bot";
 import { getChatIdForToken, getOrCreateTokenForChat } from "./telegram/store";
+import { formatAlertMessage, type AlertPayload } from "./telegram/deliver";
 
 type Ctx = { waitUntil(p: Promise<unknown>): void };
 
@@ -468,12 +469,14 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
 }
 
 /**
- * POST /telegram/relay/:token — this IS what gets registered as a /watch
- * subscription's notify_webhook. Receives the same WebhookPayload shape
- * cron.ts sends to any other webhook target (watch/webhook.ts), looks up
- * the chat, and forwards a readable message. A non-2xx here is read by
- * cron.ts exactly like any other failed delivery — the crossing retries
- * next tick, same dedup/idempotency guarantees as a raw webhook URL.
+ * POST /telegram/relay/:token — the general, documented contract for this
+ * URL: anyone can register it as a notify_webhook and it'll relay here.
+ * LiquiScope's OWN Watch Mode cron no longer calls this over HTTP, though
+ * (see telegram/deliver.ts's deliverTelegramDirect) — a self-fetch from
+ * the cron to this exact endpoint showed a reproducible KV-read miss not
+ * seen on any external call, so the cron now delivers in-process instead.
+ * This endpoint stays for any other caller that registers the URL from
+ * outside this Worker.
  */
 async function handleTelegramRelay(token: string, request: Request, env: Env): Promise<Response> {
   if (!env.TELEGRAM_BOT_TOKEN) return json({ error: "telegram not configured" }, 503);
@@ -484,14 +487,11 @@ async function handleTelegramRelay(token: string, request: Request, env: Env): P
   const payload = (await request.json().catch(() => null)) as {
     wallet?: string; chain?: string; protocol?: string; hf_threshold?: number; health_factor?: number;
   } | null;
-  if (!payload) return json({ error: "malformed payload" }, 400);
+  if (!payload?.wallet || !payload.chain || !payload.protocol || payload.hf_threshold === undefined || payload.health_factor === undefined) {
+    return json({ error: "malformed payload" }, 400);
+  }
 
-  const text =
-    `🚨 <b>LiquiScope alert</b>\n\n` +
-    `Wallet <code>${payload.wallet}</code> on ${payload.chain}/${payload.protocol} crossed your threshold.\n\n` +
-    `Health factor: <b>${payload.health_factor}</b> (threshold: ${payload.hf_threshold})`;
-
-  const result = await sendMessage(env.TELEGRAM_BOT_TOKEN, chatId, text);
+  const result = await sendMessage(env.TELEGRAM_BOT_TOKEN, chatId, formatAlertMessage(payload as AlertPayload));
   if (!result.ok) return json({ error: result.error }, 502);
   return json({ ok: true });
 }
@@ -592,7 +592,7 @@ export default {
       ctx.waitUntil(
         (async () => {
           try {
-            const summary = await runWatchCron(env.WATCH_KV);
+            const summary = await runWatchCron(env);
             console.log(JSON.stringify({ watchCron: "ok", ...summary }));
           } catch (e) {
             console.log(JSON.stringify({ watchCron: "failed", error: e instanceof Error ? e.message : String(e) }));

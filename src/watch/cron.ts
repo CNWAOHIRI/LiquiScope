@@ -13,6 +13,21 @@ import { shardsForTick } from "./budget";
 import { ADAPTERS } from "../engine/scan";
 import type { WatchSubscription } from "./types";
 import { deliverWebhook, type WebhookPayload } from "./webhook";
+import { deliverTelegramDirect, extractOwnRelayToken } from "../telegram/deliver";
+
+export interface CronEnv {
+  WATCH_KV: KVNamespace;
+  TELEGRAM_BOT_TOKEN?: string;
+}
+
+/** Our own /telegram/relay/:token URLs are delivered in-process (see telegram/deliver.ts for why) — everything else goes through the normal HTTP webhook path, unchanged. */
+async function deliverAlert(env: CronEnv, notifyWebhook: string, payload: WebhookPayload): Promise<{ ok: true } | { ok: false; error: string }> {
+  const relayToken = extractOwnRelayToken(notifyWebhook);
+  if (relayToken && env.TELEGRAM_BOT_TOKEN) {
+    return deliverTelegramDirect(env.WATCH_KV, env.TELEGRAM_BOT_TOKEN, relayToken, payload);
+  }
+  return deliverWebhook(notifyWebhook, payload);
+}
 
 /** Per-check wall-clock budget — same rationale as scan.ts's SOURCE_TIMEOUT_MS: one hung RPC must not stall the whole tick. */
 const CHECK_TIMEOUT_MS = 12_000;
@@ -59,7 +74,7 @@ type CheckResult =
   /** RPC read failed or timed out this tick — the subscription is untouched and stays in the shard; nothing is inferred from a check that didn't happen. */
   | { kind: "check_failed"; sub: WatchSubscription };
 
-async function checkOne(sub: WatchSubscription, now: Date): Promise<CheckResult> {
+async function checkOne(env: CronEnv, sub: WatchSubscription, now: Date): Promise<CheckResult> {
   const adapter = ADAPTERS.find((a) => a.protocol === sub.protocol && a.supportedChains.includes(sub.chain));
   if (!adapter) return { kind: "check_failed", sub }; // shouldn't happen — POST /watch validates this combination at signup
 
@@ -91,7 +106,7 @@ async function checkOne(sub: WatchSubscription, now: Date): Promise<CheckResult>
       health_factor: hf,
       timestamp: now.toISOString(),
     };
-    const result = await deliverWebhook(sub.notify_webhook, payload);
+    const result = await deliverAlert(env, sub.notify_webhook, payload);
     if (result.ok) {
       updated.alert_state = "fired";
       updated.last_alert_sent_at = now.toISOString();
@@ -118,7 +133,8 @@ async function checkOne(sub: WatchSubscription, now: Date): Promise<CheckResult>
   return { kind: "checked", updated, fired: false, recovered: false, webhookFailed: false };
 }
 
-export async function runWatchCron(kv: KVNamespace, now: Date = new Date()): Promise<CronSummary> {
+export async function runWatchCron(env: CronEnv, now: Date = new Date()): Promise<CronSummary> {
+  const kv = env.WATCH_KV;
   const meta = await getMeta(kv);
   const shards = shardsForTick(meta.shardCount, now);
 
@@ -142,7 +158,7 @@ export async function runWatchCron(kv: KVNamespace, now: Date = new Date()): Pro
       const results = await Promise.all(
         subs.map(async (sub): Promise<CheckResult | { kind: "expired" }> => {
           if (new Date(sub.expires_at).getTime() <= now.getTime()) return { kind: "expired" };
-          return checkOne(sub, now);
+          return checkOne(env, sub, now);
         }),
       );
 
