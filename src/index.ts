@@ -249,7 +249,7 @@ async function handleReport(request: Request, env: Env, ctx: Ctx): Promise<Respo
   );
 }
 
-const PROTOCOLS: Protocol[] = ["aave-v3", "compound-v3"];
+const PROTOCOLS: Protocol[] = ["aave-v3", "compound-v3", "morpho-blue"];
 
 function parseWebhookUrl(raw: unknown): string | null {
   if (typeof raw !== "string") return null;
@@ -308,6 +308,11 @@ async function handleWatchCreate(request: Request, env: Env, ctx: Ctx): Promise<
   const protocol = (PROTOCOLS as string[]).includes(protocolRaw) ? (protocolRaw as Protocol) : null;
   if (!protocol) {
     return json({ error: `missing or unsupported 'protocol' — use one of: ${PROTOCOLS.join(", ")}` }, 400, paymentHeaders);
+  }
+  const adapterForPair = ADAPTERS.find((a) => a.protocol === protocol && a.supportedChains.includes(chain));
+  if (!adapterForPair) {
+    const supportedChains = ADAPTERS.find((a) => a.protocol === protocol)?.supportedChains ?? [];
+    return json({ error: `'${protocol}' isn't supported on '${chain}' — use one of: ${supportedChains.join(", ")}` }, 400, paymentHeaders);
   }
   const hfThreshold = Number(body.hf_threshold);
   if (!Number.isFinite(hfThreshold) || hfThreshold <= 1.0 || hfThreshold > 3.0) {
@@ -679,7 +684,7 @@ export default {
       return json(
         {
           service: "LiquiScope",
-          description: "Cross-protocol, cross-chain DeFi liquidation-risk reports (Aave v3 + Compound v3, across Ethereum/Base/Arbitrum/Optimism)",
+          description: "Cross-protocol, cross-chain DeFi liquidation-risk reports (Aave v3 + Compound v3 across Ethereum/Base/Arbitrum/Optimism, Morpho Blue across Ethereum/Base)",
           dataAccess: "Read-only. We never touch your funds, keys, or approvals — LiquiScope only reads public chain data.",
           endpoints: {
             "POST /check": "free — single-chain quick health factor + risk tier { address, chain? }",

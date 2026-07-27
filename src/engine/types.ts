@@ -12,7 +12,7 @@
 
 export type ChainKey = "ethereum" | "base" | "arbitrum" | "optimism";
 
-export type Protocol = "aave-v3" | "compound-v3";
+export type Protocol = "aave-v3" | "compound-v3" | "morpho-blue";
 
 export type RiskTier = "safe" | "watch" | "danger" | "critical" | "liquidatable";
 
