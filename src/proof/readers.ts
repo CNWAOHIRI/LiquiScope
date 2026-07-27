@@ -15,6 +15,7 @@
 import type { Address } from "viem";
 import { AaveV3Adapter, getHealthFactorAt as aaveHealthFactorAt } from "../engine/adapters/aaveV3";
 import { CompoundV3Adapter, getHealthFactorAt as compoundHealthFactorAt } from "../engine/adapters/compoundV3";
+import { MorphoBlueAdapter, getHealthFactorAt as morphoHealthFactorAt } from "../engine/adapters/morphoBlue";
 import type { ChainKey, Protocol } from "../engine/types";
 
 export type HfReading = { market: string; healthFactor: number };
@@ -29,4 +30,5 @@ export interface ProofSource {
 export const PROOF_SOURCES: ProofSource[] = [
   { protocol: "aave-v3", supportedChains: AaveV3Adapter.supportedChains, read: aaveHealthFactorAt },
   { protocol: "compound-v3", supportedChains: CompoundV3Adapter.supportedChains, read: compoundHealthFactorAt },
+  { protocol: "morpho-blue", supportedChains: MorphoBlueAdapter.supportedChains, read: morphoHealthFactorAt },
 ];

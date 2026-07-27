@@ -19,10 +19,13 @@ Risk tiers by health factor: **safe** ≥ 1.5 > **watch** ≥ 1.15 > **danger** 
 |---|---|---|---|---|
 | Aave v3 | ok | ok | ok | ok |
 | Compound v3 | **beta** (see below) | ok | ok | unsupported |
+| Morpho Blue | ok | ok | unsupported | unsupported |
 
 `GET /report`'s `coverage` field reports this live, per request, as `"ok" \| "beta" \| "error" \| "unsupported"`. **beta** means the read succeeds and is computed by the exact same formula as every "ok" source, but has never been checked against a real live position — every position from a beta source is stamped `provisional: true` so a paid report never silently presents an unconfirmed number as equivalent to a battle-tested one. Currently only Compound v3 / Ethereum mainnet is beta: no fixture wallet was found because free-tier RPCs cap `eth_getLogs` ranges too tightly for event-based wallet discovery to be practical (see `docs/friction-log.md` FL-012/013/014 — as tight as 50 blocks on some providers). The math itself is verified by construction and direct on-chain feed inspection, just not against a real borrower yet.
 
-**Beta status re-evaluated 2026-07-24** (engine-depth build): still beta, for the same reason — re-tested the `eth_getLogs` ceiling with fresh numbers this session (FL-014) and it hasn't eased. This is a live, revisited decision each time the engine is touched, not a stale label.
+**Beta status re-evaluated 2026-07-27**: still beta, for the same reason — re-tested the `eth_getLogs` ceiling with fresh numbers this session (FL-014) and it hasn't eased. This is a live, revisited decision each time the engine is touched, not a stale label. Morpho Blue (added the same session) skipped a beta period entirely: unlike Compound, a real fixture wallet was findable — Morpho's own public indexer exposes positions and health factors directly, no `eth_getLogs` discovery needed — and 7 real live positions across all 5 curated markets were checked before shipping, every computed health factor matching the indexer's independently-reported value exactly. Morpho Blue isn't deployed on Arbitrum or Optimism at all (confirmed via `eth_getCode` at its deterministic address on both — genuinely absent, not just unindexed).
+
+Morpho Blue is architecturally different from Aave/Compound: it's a single immutable contract on which markets are created permissionlessly, with no on-chain enumeration of which markets exist or which a wallet has touched. LiquiScope checks a small curated list of major markets by real TVL (WETH/USDC, cbBTC/USDC, wstETH/USDT on Ethereum; cbBTC/USDC, WETH/USDC on Base) rather than claiming exhaustive coverage — same honest-scoping approach as Compound's per-chain market list.
 
 ## Portfolio score (in `/report`'s `portfolio_score` field)
 
@@ -61,6 +64,7 @@ GET  /proof  ─► x402 ─► lookback probe ─► lean historical replay ─
 engine (src/engine/): viem · 4 fallback RPCs per chain (2 for historical reads) · multicall batching
   adapters/aaveV3.ts     PoolAddressesProvider-resolved; getHealthFactorAt for /proof
   adapters/compoundV3.ts Comet proxies pinned from compound-finance/comet; same lean-read pattern
+  adapters/morphoBlue.ts Single deterministic-address singleton; curated market list (permissionless, no on-chain enumeration)
   risk.ts                HF tiers, dominant-collateral liquidation price
   rpc.ts                 getClient (live) vs getHistoricalClient (historical, tighter retry/provider budget)
 ```

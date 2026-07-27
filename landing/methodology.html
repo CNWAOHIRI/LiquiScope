@@ -77,6 +77,30 @@ holding every other balance and price constant</pre>
     chain, not assumed.
   </p>
 
+  <h3>Morpho Blue</h3>
+  <p>
+    Morpho Blue is a single immutable contract on which markets are created
+    permissionlessly — each market is an isolated (collateral, loan, oracle,
+    interest model, LLTV) tuple, with no aggregate HF field and no on-chain
+    enumeration of which markets exist. LiquiScope copies the exact health
+    check the protocol itself uses (from Morpho's own <code>Morpho.sol</code>),
+    including its rounding direction:
+  </p>
+  <pre>borrowed  = borrowShares.toAssetsUp(totalBorrowAssets, totalBorrowShares)  // rounds up, against the borrower
+maxBorrow = collateral × oraclePrice / 1e36 × LLTV                          // rounds down
+healthy  ⟺ maxBorrow ≥ borrowed</pre>
+  <p class="note">
+    Because there's no on-chain market enumeration, LiquiScope checks a small
+    curated list of major markets by real supply (WETH/USDC, cbBTC/USDC,
+    wstETH/USDT on Ethereum; cbBTC/USDC, WETH/USDC on Base) rather than
+    claiming exhaustive coverage — the same honest-scoping approach as the
+    Compound market list above. Every market-id derivation and the health
+    formula itself were checked against 7 real live positions via Morpho's
+    own public indexer before shipping — every computed health factor matched
+    the indexer's independently-reported value exactly, not just internally
+    self-consistent.
+  </p>
+
   <h2>Portfolio score</h2>
   <p>A single 0-100 number summarizing a wallet's entire cross-protocol, cross-chain exposure:</p>
   <pre>base_score  = piecewise-linear interpolation of the WORST health factor
@@ -91,6 +115,7 @@ final_score = round(base_score × (1 − 0.15 × HHI))</pre>
   <ul>
     <li><strong>Aave v3:</strong> the protocol's own on-chain price oracle (<code>getAssetsPrices</code>), read at the same block as the position data.</li>
     <li><strong>Compound v3:</strong> each Comet market's own <code>getPrice</code> feed per asset, plus the base-token feed for debt.</li>
+    <li><strong>Morpho Blue:</strong> each market's own oracle, pinned at market creation — prices collateral directly in loan-token terms (not USD); LiquiScope's curated markets all use a USD-pegged stablecoin as the loan token, so that side is treated as $1 (documented, not hidden — the health factor itself is exact regardless, only the displayed USD figures inherit this).</li>
     <li><strong>Historical replay (<code>GET /proof</code>):</strong> the identical oracle reads above, pinned to a historical block instead of the latest one — never a separate historical price model.</li>
   </ul>
 
@@ -123,6 +148,13 @@ final_score = round(base_score × (1 − 0.15 × HHI))</pre>
         <td class="status-ok">ok</td>
         <td class="status-unsupported">unsupported</td>
       </tr>
+      <tr>
+        <td>Morpho Blue</td>
+        <td class="status-ok">ok</td>
+        <td class="status-ok">ok</td>
+        <td class="status-unsupported">unsupported</td>
+        <td class="status-unsupported">unsupported</td>
+      </tr>
     </tbody>
   </table>
   <p class="note">
@@ -130,8 +162,10 @@ final_score = round(base_score × (1 − 0.15 × HHI))</pre>
     ranges too tightly for event-based wallet discovery to be practical (as
     tight as 50 blocks on some providers) — a free-infrastructure ceiling, not
     an archive-tier gap that would ease with more waiting. Re-evaluated
-    2026-07-24, still beta, same reason. This table is hardcoded and needs a
-    manual update if coverage changes — <code>GET /report</code>'s live
+    2026-07-24, still beta, same reason. Morpho Blue isn't deployed on
+    Arbitrum or Optimism at all (confirmed via <code>eth_getCode</code> at its
+    deterministic address on both, not just unindexed). This table is
+    hardcoded and needs a manual update if coverage changes — <code>GET /report</code>'s live
     <code>coverage</code> field is the source of truth if the two ever disagree.
   </p>
 

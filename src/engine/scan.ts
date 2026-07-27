@@ -12,13 +12,14 @@
 import type { Address } from "viem";
 import { AaveV3Adapter } from "./adapters/aaveV3";
 import { CompoundV3Adapter } from "./adapters/compoundV3";
+import { MorphoBlueAdapter } from "./adapters/morphoBlue";
 import type { ProtocolAdapter } from "./adapters/types";
 import { CHAINS } from "./rpc";
 import { round } from "./risk";
 import type { ChainKey, ChainScan, CoverageEntry, NormalizedPosition, PortfolioSummary, Protocol } from "./types";
 
 /** The adapter registry — the only place that lists which protocols exist. */
-export const ADAPTERS: ProtocolAdapter[] = [AaveV3Adapter, CompoundV3Adapter];
+export const ADAPTERS: ProtocolAdapter[] = [AaveV3Adapter, CompoundV3Adapter, MorphoBlueAdapter];
 
 /**
  * Sources whose reads succeed and are computed by the exact same formula as
@@ -43,6 +44,12 @@ export const ADAPTERS: ProtocolAdapter[] = [AaveV3Adapter, CompoundV3Adapter];
  * next time this file is touched.
  */
 const PROVISIONAL_SOURCES: { protocol: Protocol; chain: ChainKey }[] = [{ protocol: "compound-v3", chain: "ethereum" }];
+// morpho-blue (added 2026-07-27) is NOT listed here: math was verified line-by-line against
+// Morpho.sol/SharesMathLib.sol source AND cross-checked against 7 real live positions across all 5
+// curated markets (both chains) via Morpho's own public indexer — every computed health factor matched
+// the API's independently-reported value exactly. Promoted straight to "ok", no beta period needed,
+// since the verification bar (real position, hand/independently confirmed numbers) was already met
+// before this shipped, unlike compound-v3/ethereum above where no fixture wallet was ever found.
 
 function isProvisional(protocol: Protocol, chain: ChainKey): boolean {
   return PROVISIONAL_SOURCES.some((s) => s.protocol === protocol && s.chain === chain);
