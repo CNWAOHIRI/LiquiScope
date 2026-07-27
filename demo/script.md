@@ -1,9 +1,9 @@
 # LiquiScope — demo script v2 (autonomous agent + landing page)
 
 Format: browser (landing page) + terminal (the demo agent's own live narration — this is the
-centerpiece now, not typed curl commands). Target ~75-90s; the agent's real reasoning is
-inherently more compelling footage than a manual walkthrough, so let it breathe rather than
-cutting hard on the old 90s budget.
+centerpiece now, not typed curl commands). **Hard target: 90 seconds**, same budget as v1 — the
+shot timings below already sum to exactly 90s; if the live agent run is running long when you
+record it, cut away to Shot 3 mid-narration rather than waiting for the log to finish.
 
 Supersedes v1 (below the checklist) — that version predates Watch Mode, GET /proof, the landing
 page, and the demo agent itself; kept for reference, not for reuse.
@@ -43,8 +43,9 @@ Back to the landing page; scroll to the methodology section briefly, then hold o
 
 ## Prep checklist (before recording)
 
-- [ ] **Re-verify the wallet is still critical.** Positions move — run `cd ~/liquiscope-demo-agent && npm run run -- 0x496b0Da20E553cC4B1879D54e57283b8C9fDfbB4 arbitrum` once, off-camera, first. If it's no longer watch-or-worse, find a fresh at-risk wallet via the main repo's `npm run test:live` and swap the address.
-- [ ] **Check the demo wallet's balance**: `npm run balance` in `~/liquiscope-demo-agent` — needs ≥$0.21 USD₮0 for one on-camera run (had $0.46362 as of the last check; enough for two more).
+- [ ] **Time a dry run first, off-camera**: `cd ~/liquiscope-demo-agent && time npm run run -- 0x496b0Da20E553cC4B1879D54e57283b8C9fDfbB4 arbitrum`. This costs a real $0.21 (same as the on-camera take), but tells you exactly how long Shot 2 actually runs — the 45s budget is an estimate, not measured. If it's longer, either trim your voiceover further or plan the cut to Shot 3 at a specific line rather than guessing live.
+- [ ] **Re-verify the wallet is still critical.** Positions move — the dry run above doubles as this check. If it's no longer watch-or-worse, find a fresh at-risk wallet via the main repo's `npm run test:live` and swap the address before the real take.
+- [ ] **Check the demo wallet's balance**: `npm run balance` in `~/liquiscope-demo-agent` — the dry run above plus the real take is $0.42 total. Balance was $0.46362 as of the last check, which covers both with almost nothing left over — top up before recording if you want margin for a second real take.
 - [ ] Terminal: font ≥ 18pt, dark theme, output not truncated by window width (the narration lines wrap).
 - [ ] Landing page loads clean in the recording browser — no dev tools open, no console errors visible.
 - [ ] Optional, if you want a real webhook fire on camera instead of just the registration: this hasn't been demonstrated yet (the demo agent's registered subscriptions use a placeholder `notify_webhook` that can never succeed). Would need a real receiver (e.g. a fresh https://webhook.site URL) passed in place of `DEMO_WEBHOOK` in `~/liquiscope-demo-agent/src/run.ts`, then either wait ~15 min for the next cron tick after registering, or accept the registration-only beat as sufficient (the agent's narration already explains what happens next).
