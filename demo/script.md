@@ -10,14 +10,14 @@ page, and the demo agent itself; kept for reference, not for reuse.
 
 ## Shot list
 
-**Shot 1 — hook (0:00–0:10), landing page**
+**Shot 1 — hook (0:00–0:08), landing page**
 Open https://liquiscope-landing.liquiscope.workers.dev. Let the read-only badge and the two live
 widgets (agents-calling counter, service status) sit on screen for a beat — they're real, polling
 data, not mockups.
 
-> "This is LiquiScope — a DeFi liquidation-risk service, live on OKX dot AI. But the interesting part isn't the website. It's that other agents pay to use it autonomously. Watch."
+> "This is LiquiScope — a DeFi liquidation-risk service, live on OKX dot AI. But the interesting part isn't the website."
 
-**Shot 2 — the agent decides, live (0:10–0:55), terminal**
+**Shot 2 — the agent decides, live (0:08–0:48), terminal**
 Run, live, no pre-recording:
 
 ```bash
@@ -28,18 +28,24 @@ Let the full narration play out on screen — the free check, the risk-tier deci
 $0.15 payment for the report, the real $0.06 payment to register monitoring. Don't talk over it;
 the agent is narrating itself.
 
-> "No script, no mocked payments — this is a real agent I built, with its own funded wallet. It checks a wallet for free first. If it's healthy, it stops — no reason to pay for more. This one's critical, so it decides to pay for the full report. Then, because the position is this close to liquidation, it decides on its own to register ongoing monitoring — a second real payment."
+> "No script, no mocked payments — this is a real agent I built, with its own funded wallet. It checks a wallet for free first. If it's healthy, it stops. This one's critical, so it pays for the full report — then, because the position is this close to liquidation, it decides on its own to register ongoing monitoring."
 
-**Shot 3 — the proof (0:55–1:15), terminal or explorer**
+**Shot 3 — the proof (0:48–1:00), terminal or explorer**
 Paste one of the two transaction hashes the run just printed into an X Layer block explorer, or
 just highlight it in the terminal output with the cursor.
 
-> "Both payments settle on-chain for real — X Layer, stablecoin, gasless for the agent. That's a real transaction hash, not a mock. Fifteen cents and six cents, decided and spent by the agent itself, in under a minute."
+> "Both payments settle on-chain for real — X Layer, stablecoin, gasless for the agent. Fifteen cents and six cents, decided and spent by the agent itself."
 
-**Shot 4 — close (1:15–1:30), landing page**
-Back to the landing page; scroll to the methodology section briefly, then hold on the header.
+**Shot 4 — it's also on Telegram (1:00–1:17), phone screen or Telegram desktop**
+Open the chat with the LiquiScope bot. Paste a wallet address (any address, doesn't need to be
+the critical one — a quick, clean reply matters more here than drama). Show the reply landing.
 
-> "LiquiScope. Live on OKX dot AI, paid entirely on-chain, and now something other agents can use without a human in the loop. Hashtag OKX AI."
+> "Same risk engine, no terminal required — paste a wallet into Telegram and get the free check right there in the chat."
+
+**Shot 5 — close (1:17–1:30), landing page**
+Back to the landing page; hold on the header.
+
+> "LiquiScope. Live on OKX dot AI, paid entirely on-chain, usable by agents or by a human just pasting an address. Hashtag OKX AI."
 
 ## Funding the demo wallet
 
@@ -55,7 +61,8 @@ Running balance (update this line whenever you check it, so the number here does
 - [ ] **Check the demo wallet's balance**: `npm run balance` in `~/liquiscope-demo-agent` — the dry run above plus the real take is $0.42 total; see the running balance above before assuming there's enough.
 - [ ] Terminal: font ≥ 18pt, dark theme, output not truncated by window width (the narration lines wrap).
 - [ ] Landing page loads clean in the recording browser — no dev tools open, no console errors visible.
-- [ ] Optional, if you want a real webhook fire on camera instead of just the registration: this hasn't been demonstrated yet (the demo agent's registered subscriptions use a placeholder `notify_webhook` that can never succeed). Would need a real receiver (e.g. a fresh https://webhook.site URL) passed in place of `DEMO_WEBHOOK` in `~/liquiscope-demo-agent/src/run.ts`, then either wait ~15 min for the next cron tick after registering, or accept the registration-only beat as sufficient (the agent's narration already explains what happens next).
+- [ ] **Shot 4 (Telegram): send a test message to the bot before recording**, off-camera, to confirm it's replying (bot token/webhook can drift — cheap to check, expensive to discover live). Paste a real or fake `0x…` address; you should get a risk-tier reply back within a couple seconds. If it doesn't reply, the webhook may need re-registering (`setWebhook` — see the Telegram integration notes in `src/index.ts`'s `handleTelegramWebhook`) before recording.
+- [ ] Optional, if you want a real Watch Mode *alert* fire on camera (different from Shot 4's free check) — this is being verified separately as of this session; the demo agent's own registered subscriptions can point `notify_webhook` at a `/telegram/relay/:token` URL (see `~/liquiscope-demo-agent/src/run.ts`'s `DEMO_WEBHOOK`) instead of the old dead placeholder, so an alert would land in the same Telegram chat as Shot 4 rather than a raw webhook receiver like webhook.site.
 
 ---
 
