@@ -376,11 +376,63 @@ function telegramRelayUrl(origin: string, token: string): string {
   return `${origin}/telegram/relay/${token}`;
 }
 
+/** Pulls a 0x… address and, optionally, a recognized chain name out of free-form chat text. Defaults to "base", same as /check's own default. */
+function parseWalletFromText(text: string): { address: Address; chain: ChainKey } | null {
+  const addressMatch = text.match(/0x[0-9a-fA-F]{40}/);
+  if (!addressMatch) return null;
+  const address = parseAddress(addressMatch[0]);
+  if (!address) return null;
+
+  const lower = text.toLowerCase();
+  const chain = (CHAINS as ChainKey[]).find((c) => lower.includes(c)) ?? "base";
+  return { address, chain };
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/** Free check, run conversationally — same scanWallet/worstTier path handleCheck uses, just formatted for a chat reply instead of JSON. No payment involved. */
+async function replyWithCheck(botToken: string, chatId: string, address: Address, chain: ChainKey): Promise<void> {
+  const [scan] = await scanWallet(address, [chain]);
+  if (scan.positions.length === 0 && scan.errors.length > 0) {
+    await sendMessage(botToken, chatId, "⚠️ Upstream data sources unavailable right now — try again shortly.");
+    return;
+  }
+
+  const tier = worstTier(scan.positions);
+  if (scan.positions.length === 0) {
+    await sendMessage(botToken, chatId, `No lending positions found for <code>${address}</code> on ${chain} (positions under $1 are ignored).`);
+    return;
+  }
+
+  const lines = scan.positions.map((p) => {
+    const hf = p.healthFactor === Infinity ? "∞" : p.healthFactor.toFixed(4);
+    return `${escapeHtml(p.protocol)}/${escapeHtml(p.market)}: HF ${hf} (${p.tier})`;
+  });
+
+  await sendMessage(
+    botToken,
+    chatId,
+    `<b>${tier.toUpperCase()}</b> — <code>${address}</code> on ${chain}\n\n${lines.join("\n")}\n\n` +
+      `Full multi-chain report + recommendations: POST /report ($0.15, x402). Ongoing monitoring: POST /watch ($0.02/day) — see https://liquiscope-landing.liquiscope.workers.dev for details.`,
+  );
+}
+
 /**
  * POST /telegram/webhook — Telegram's own delivery target, not something a
  * caller invokes directly. Verified via the secret token Telegram echoes
  * back on every request (pinned during setWebhook) so this can't be spoofed
  * into registering an arbitrary chat_id for someone else's token.
+ *
+ * Two behaviors depending on the message: a pasted wallet address runs a
+ * real, free /check and replies with the result directly in chat (same
+ * data path handleCheck uses — no separate model). Anything else falls back
+ * to onboarding: mint/reuse a relay token, reply with the notify_webhook
+ * URL for /watch. Paid endpoints (/report, /watch) are intentionally NOT
+ * triggerable from chat — that needs a funding-model decision (does
+ * LiquiScope pay on the user's behalf, or does the user need their own
+ * signing flow) that hasn't been made yet.
  */
 async function handleTelegramWebhook(request: Request, env: Env): Promise<Response> {
   if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_WEBHOOK_SECRET) return json({ error: "telegram not configured" }, 503);
@@ -393,6 +445,14 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
   if (!chat) return json({ ok: true }); // not a message we care about (edited_message, etc.) — 200 so Telegram doesn't retry
 
   const chatId = String(chat.id);
+  const text = update?.message?.text ?? "";
+  const wallet = parseWalletFromText(text);
+
+  if (wallet) {
+    await replyWithCheck(env.TELEGRAM_BOT_TOKEN, chatId, wallet.address, wallet.chain);
+    return json({ ok: true });
+  }
+
   const url = new URL(request.url);
   const token = await getOrCreateTokenForChat(env.WATCH_KV, chatId);
   const relayUrl = telegramRelayUrl(url.origin, token);
@@ -400,7 +460,8 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
   await sendMessage(
     env.TELEGRAM_BOT_TOKEN,
     chatId,
-    `👋 This is your LiquiScope alert relay.\n\nUse this as <b>notify_webhook</b> when registering <code>POST /watch</code>, and threshold-crossing alerts will arrive here instead of needing your own server:\n\n<code>${relayUrl}</code>`,
+    `👋 Paste a wallet address (0x…) and I'll check its DeFi liquidation risk for free.\n\n` +
+      `For ongoing monitoring, register <code>POST /watch</code> with this as your <b>notify_webhook</b> and I'll alert you here on a threshold crossing:\n\n<code>${relayUrl}</code>`,
   );
 
   return json({ ok: true });
